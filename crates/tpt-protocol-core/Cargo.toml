@@ -1,0 +1,23 @@
+[package]
+name = "tpt-protocol-core"
+version = "0.1.0"
+description = "Core traits for TPT Protocol: FrameParser, StateValidator, DataNormalizer"
+keywords = ["tpt", "protocol", "traits", "industrial", "embedded"]
+categories = ["encoding", "network-programming", "embedded"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = ["std"]
+std = ["tpt-protocol-tup/std"]
+
+[dependencies]
+tpt-protocol-tup = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

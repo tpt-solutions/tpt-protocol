@@ -1,0 +1,83 @@
+Design Document: TPT Protocol
+1. Purpose
+TPT Protocol is an open-source, local-first, memory-safe software suite designed to decode, normalize, and unify the world's most heavily gatekept industrial, medical, and hardware communication protocols.
+Modern physical infrastructure—from tractors and boats to hospital ventilators and power grids—is choked by proprietary, fragmented, and insecure communication standards. TPT Protocol exists to be the universal translation layer for the physical world. By providing highly reusable, no_std Rust crates and wrapping them in three distinct, purpose-built user interfaces, TPT Protocol restores data sovereignty, eliminates vendor lock-in, and secures critical infrastructure against memory-safety vulnerabilities.
+2. Core Philosophy
+Headless & Agnostic Core: The protocol parsers are pure, headless logic. They do not care if they are running on a $2 microcontroller or a $2,000 edge server.
+no_std by Default: The core parsing and encoding logic for all 19 protocols will run on bare-metal hardware without an operating system.
+Memory Safe & Formally Verifiable: We are replacing 30-year-old, vulnerable C/C++ implementations with Rust. Critical state machines will leverage formal verification (tpt-telos) to mathematically guarantee the absence of buffer overflows and infinite loops.
+Multi-Target UI: We meet the user where they are. The same headless backend feeds a hardcore Terminal UI for mechanics, a native Embedded UI for machine cabs, and a modern Web UI for facility managers.
+3. Project Goals
+Goal 1: Build the "Rosetta Stone" of Hardware
+Create a unified set of Rust traits that allow any of the 19 supported protocols to be ingested, validated, and normalized into a clean, strongly-typed data structure.
+Goal 2: Eradicate ICS (Industrial Control System) Vulnerabilities
+Provide a secure, memory-safe alternative to legacy protocol stacks, making critical infrastructure (power grids, hospitals, heavy machinery) resistant to remote code execution and buffer overflow attacks.
+Goal 3: Deliver "Really Easy to Use" Interfaces Across 3 Paradigms
+Abstract the harsh realities of raw hex frames and proprietary fault codes into beautiful, actionable, plain-English insights across three distinct UI targets.
+Goal 4: Ensure Absolute Data Sovereignty
+The software works perfectly offline. Data belongs on the local network or the edge device, never forced into a corporate cloud.
+4. The Protocol Coverage (The 19)
+The backend is divided into 4 industry categories, each containing highly specialized, reusable crates:
+Heavy Machinery, Auto & Agriculture
+SAE J1939: Heavy-duty diesel vehicles (trucks, tractors, excavators).
+ISOBUS (ISO 11783): Agricultural tractor-implement communication.
+UDS (ISO 14229): Unified Diagnostic Services (The Right-to-Repair holy grail for ECU fault codes).
+CANopen: Robotics, medical devices, and marine network management.
+5. DoIP / SOME/IP: Modern automotive-Ethernet diagnostics, successor to CAN-based UDS.
+Marine & Aviation
+6. NMEA 2000 / 0183: Marine electronics, sonar, GPS, and engine integration.
+7. MAVLink: Lightweight telemetry for drones and UAVs.
+Industrial IoT, BMS & Energy
+8. Modbus RTU / TCP: The 50-year-old king of factory automation and solar inverters.
+9. BACnet: Commercial building HVAC, lighting, and fire alarms.
+10. OPC UA: The modern, semantic Industry 4.0 standard.
+11. DNP3: Electrical grid and utility SCADA systems.
+12. EtherCAT: High-performance, microsecond-latency factory automation.
+13. Sparkplug B: MQTT-based Industry 4.0 unified-namespace standard for factory/SCADA data.
+14. OCPP 2.0.1: EV charging station communication (charger ↔ backend).
+Healthcare & Smart Infrastructure
+15. IEEE 11073 (SDC): Bedside medical device telemetry (ventilators, pumps).
+16. HL7 v2.x: Legacy hospital data routing and messaging.
+17. KNX: Commercial smart building lighting and climate control.
+18. Matter / Thread: The modern cryptographic smart home/IoT mesh standard.
+19. CoAP: Lightweight RESTful protocol for constrained IoT/medical sensor devices.
+4a. The TPT Unified Protocol (TUP)
+All 19 protocol crates normalize into one common, openly-specified message envelope — the TPT Unified Protocol (TUP) — rather than an ad hoc internal type. TUP has a canonical binary encoding (CBOR) for wire/embedded use and an isomorphic JSON mirror for the daemon's local API and browser UIs, so a third party can consume TPT-normalized data without depending on the Rust crates at all. Full schema, CDDL definition, and worked examples: see `SPEC-TUP.md`.
+5. Architecture & The Multi-Target UI Strategy
+TPT Protocol is structured as a Headless Daemon that serves data to Three Distinct UI Consumers. This ensures the core remains pure and testable, while the UI can be optimized for the specific physical environment of the user.
+tpt-protocol/
+├── core/                   # The 19 protocol parsers (no_std, headless, zero-copy)
+├── tup/                    # tpt-protocol-tup: canonical normalized schema (CBOR + JSON), no_std
+├── daemon/                 # The background service
+│   ├── transport/          # Listens to physical hardware (Serial, CAN, TCP, UDP)
+│   ├── ipc/                # Local Inter-Process Communication (Unix sockets / Shared memory)
+│   └── api/                # Local WebSocket/REST server for web UIs
+│
+├── ui-cli/                 # PATH 1: Terminal UI (Rust + Ratatui)
+├── ui-embedded/            # PATH 2: Native Embedded UI (Rust + Slint / Iced)
+└── ui-web/                 # PATH 3: Local Web Dashboard (Tauri v2 + SvelteKit)
+
+Path 1: The Field Mechanic (Terminal UI / TUI)
+Tech: Rust + ratatui
+Environment: SSH sessions, low-bandwidth serial terminals, headless edge servers.
+Experience: A keyboard-driven, high-contrast, color-coded terminal dashboard. Perfect for a mechanic in a dirty, bright environment who needs to instantly read a J1939 fault code or monitor live Modbus registers without waiting for a GUI to load.
+Path 2: The Machine Operator (Native Embedded UI)
+Tech: Rust + Slint (or Iced)
+Environment: Ruggedized touch screens mounted inside tractor cabs, boat helms, or factory control panels.
+Experience: Compiles down to native, highly optimized C++/Rust. Zero web-browser overhead. 60fps touch interface with large, gloved-hand-friendly buttons. Runs directly on the edge hardware (e.g., Raspberry Pi or STM32) alongside the daemon.
+Path 3: The Fleet / Facility Manager (Local Web Dashboard)
+Tech: Tauri v2 (Desktop app) or pure Web + SvelteKit (Browser)
+Environment: Office laptops, iPads on the local Wi-Fi, fleet management desks.
+Experience: A beautiful, modern, reactive web dashboard. Connects to the tpt-protocol-daemon via local WebSockets, consuming the TUP-JSON stream (§4a). Displays historical graphs, fleet-wide health maps, and complex diagnostic trees for all 19 protocols across multiple machines.
+6. Target Personas
+The Field Mechanic / Sysadmin: Needs deep, raw diagnostic access via the TUI to fix a broken machine in the field without proprietary dongles.
+The Machine Operator: Needs a rugged, simple, touch-friendly Embedded UI in the cab to monitor implement health and basic telemetry.
+The Facility / Fleet Manager: Needs the Web UI to monitor the health of 50 different machines or building systems from an office iPad.
+The Hardware Developer / Integrator: Wants to use the Core Crates (no_std) to build their own custom hardware, smart implement, or medical device without writing protocol parsers from scratch.
+7. Next Steps (The MVP)
+To prove the architecture without getting bogged down in all 19 protocols at once, we will execute the following MVP plan:
+Define the Unified Schema: Write tpt-protocol-tup, establishing the TUP message envelope (§4a) that DataNormalizer implementations will return.
+Define the Core Traits: Write tpt-protocol-core, establishing the universal Rust traits for FrameParser, StateValidator, and DataNormalizer (returning tup::DataPoint).
+Implement Protocol #1: Build tpt-protocol-modbus (or tpt-protocol-j1939) as the proof-of-concept parser.
+Build the Daemon: Create the tpt-protocol-daemon to listen to a simulated (or real) serial/CAN port and expose the parsed data via local IPC.
+Deploy Path 1 (TUI): Build the ratatui CLI tool to prove we can read, parse, and display live protocol data in the terminal with zero latency.

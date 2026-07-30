@@ -1,0 +1,27 @@
+[package]
+name = "tpt-protocol-cli"
+version = "0.1.0"
+description = "TPT Protocol terminal UI — ratatui dashboard for live protocol data"
+keywords = ["tpt", "protocol", "tui", "ratatui", "dashboard"]
+categories = ["command-line-utilities"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tpt-protocol-cli"
+path = "src/main.rs"
+
+[dependencies]
+tpt-protocol-tup = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+ratatui = "0.29"
+crossterm = "0.28"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

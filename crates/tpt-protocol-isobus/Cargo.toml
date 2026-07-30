@@ -1,0 +1,20 @@
+[package]
+name = "tpt-protocol-isobus"
+version = "0.1.0"
+description = "ISO 11783 (ISOBUS) agricultural protocol parser"
+keywords = ["tpt", "protocol", "industrial", "embedded"]
+categories = ["encoding", "network-programming", "embedded"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+tpt-protocol-core = { workspace = true }
+tpt-protocol-tup = { workspace = true }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

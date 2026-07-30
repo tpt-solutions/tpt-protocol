@@ -1,0 +1,28 @@
+[package]
+name = "tpt-protocol-daemon"
+version = "0.1.0"
+description = "TPT Protocol background service — transports, protocol plugins, and local API"
+keywords = ["tpt", "protocol", "daemon", "industrial"]
+categories = ["network-programming"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "tpt-protocol-daemon"
+path = "src/main.rs"
+
+[dependencies]
+tpt-protocol-core = { workspace = true }
+tpt-protocol-tup = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+anyhow = "1"
+toml = "0.8"

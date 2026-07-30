@@ -1,0 +1,51 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tpt-protocol-tup",
+    "crates/tpt-protocol-core",
+    "crates/tpt-protocol-modbus",
+    "crates/tpt-protocol-j1939",
+    "crates/tpt-protocol-isobus",
+    "crates/tpt-protocol-uds",
+    "crates/tpt-protocol-canopen",
+    "crates/tpt-protocol-doip-someip",
+    "crates/tpt-protocol-nmea",
+    "crates/tpt-protocol-mavlink",
+    "crates/tpt-protocol-bacnet",
+    "crates/tpt-protocol-opcua",
+    "crates/tpt-protocol-dnp3",
+    "crates/tpt-protocol-ethercat",
+    "crates/tpt-protocol-sparkplugb",
+    "crates/tpt-protocol-ocpp",
+    "crates/tpt-protocol-ieee11073-sdc",
+    "crates/tpt-protocol-hl7v2",
+    "crates/tpt-protocol-knx",
+    "crates/tpt-protocol-matter-thread",
+    "crates/tpt-protocol-coap",
+    "crates/tpt-protocol-daemon",
+    "crates/tpt-protocol-cli",
+]
+exclude = ["out-protocol-*"]
+
+[workspace.package]
+description = "Open-source, memory-safe protocol suite unifying 19 industrial, medical, and hardware protocols"
+authors = ["TPT Protocol Contributors"]
+edition = "2021"
+rust-version = "1.75"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/tpt-protocol/tpt-protocol"
+repository = "https://github.com/tpt-protocol/tpt-protocol"
+
+[workspace.dependencies]
+tpt-protocol-tup = { path = "crates/tpt-protocol-tup" }
+tpt-protocol-core = { path = "crates/tpt-protocol-core" }
+minicbor = { version = "0.24", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
