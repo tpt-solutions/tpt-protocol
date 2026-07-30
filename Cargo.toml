@@ -29,7 +29,7 @@ exclude = ["out-protocol-*"]
 
 [workspace.package]
 description = "Open-source, memory-safe protocol suite unifying 19 industrial, medical, and hardware protocols"
-authors = ["TPT Protocol Contributors"]
+authors = ["TPT Solutions"]
 edition = "2021"
 rust-version = "1.75"
 license = "MIT OR Apache-2.0"
