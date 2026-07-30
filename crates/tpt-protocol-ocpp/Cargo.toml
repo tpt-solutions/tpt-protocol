@@ -1,7 +1,7 @@
 [package]
 name = "tpt-protocol-ocpp"
 version = "0.1.0"
-description = "OCPP 2.0.1 EV charging station protocol parser"
+description = "OCPP 2.0.1 implementation, no_std (the ocpp crate is unmaintained since 2019)"
 keywords = ["tpt", "protocol", "industrial", "embedded"]
 categories = ["encoding", "network-programming", "embedded"]
 authors.workspace = true

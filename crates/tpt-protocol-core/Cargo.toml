@@ -13,10 +13,11 @@ repository.workspace = true
 
 [features]
 default = ["std"]
-std = ["tpt-protocol-tup/std"]
+std = ["tpt-protocol-tup/std", "futures-util"]
 
 [dependencies]
 tpt-protocol-tup = { workspace = true }
+futures-util = { workspace = true, optional = true }
 
 [package.metadata.docs.rs]
 all-features = true

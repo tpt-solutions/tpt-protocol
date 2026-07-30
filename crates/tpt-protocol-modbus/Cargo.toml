@@ -1,7 +1,7 @@
 [package]
 name = "tpt-protocol-modbus"
 version = "0.1.0"
-description = "Modbus RTU/TCP protocol parser and normalizer"
+description = "Modbus RTU/TCP implementation, no_std (tokio-modbus requires std + tokio)"
 keywords = ["tpt", "protocol", "industrial", "embedded"]
 categories = ["encoding", "network-programming", "embedded"]
 authors.workspace = true

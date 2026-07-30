@@ -34,25 +34,25 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 
 | Crate | Protocol | Category | Strategy |
 |-------|----------|----------|----------|
-| `tpt-protocol-modbus` | Modbus RTU/TCP | Industrial IoT | Pattern B (wraps `rmodbus`) |
+| `tpt-protocol-modbus` | Modbus RTU/TCP | Industrial IoT | Pattern A (scratch, no_std alt. to `tokio-modbus`) |
 | `tpt-protocol-j1939` | SAE J1939 | Heavy Machinery | Pattern A (scratch) |
 | `tpt-protocol-isobus` | ISO 11783 (ISOBUS) | Agriculture | Pattern A (scratch) |
-| `tpt-protocol-uds` | ISO 14229 (UDS) | Automotive | Pattern B (wraps `iso14229-1`) |
-| `tpt-protocol-canopen` | CANopen | Automation | Pattern B (wraps `zencan`) |
+| `tpt-protocol-uds` | ISO 14229 (UDS) | Automotive | Pattern A (scratch — no existing crate) |
+| `tpt-protocol-canopen` | CANopen | Automation | Pattern A (scratch, no_std alt. to `canopen` crate) |
 | `tpt-protocol-doip-someip` | DoIP / SOME/IP | Automotive | Pattern A (scratch) |
-| `tpt-protocol-nmea` | NMEA 2000/0183 | Marine | Pattern B (wraps `nmea`) |
-| `tpt-protocol-mavlink` | MAVLink | Drone | Pattern B (wraps `mavlink-core`) |
+| `tpt-protocol-nmea` | NMEA 2000/0183 | Marine | Pattern A (scratch, MIT-compatible alt. to `nmea` crate) |
+| `out-protocol-mavlink` | MAVLink | Drone | Private (alt. to `mavlink` crate) |
 | `tpt-protocol-bacnet` | BACnet | Building | Pattern A (scratch) |
 | `tpt-protocol-opcua` | OPC UA | Industry 4.0 | Pattern A (scratch) |
 | `tpt-protocol-dnp3` | DNP3 | Energy/SCADA | Pattern A (scratch) |
-| `tpt-protocol-ethercat` | EtherCAT | Factory | Pattern B (wraps `ethercrab`) |
+| `out-protocol-ethercat` | EtherCAT | Factory | Private (alt. to `ethercrab`) |
 | `tpt-protocol-sparkplugb` | Sparkplug B | IIoT | Pattern A (scratch) |
-| `tpt-protocol-ocpp` | OCPP 2.0.1 | EV Charging | Pattern B (wraps `rust-ocpp`) |
+| `tpt-protocol-ocpp` | OCPP 2.0.1 | EV Charging | Pattern A (scratch — `ocpp` crate unmaintained) |
 | `tpt-protocol-ieee11073-sdc` | IEEE 11073 SDC | Medical | Pattern A (scratch) |
 | `tpt-protocol-hl7v2` | HL7 v2.x | Healthcare | Pattern A (scratch) |
 | `tpt-protocol-knx` | KNX | Smart Building | Pattern A (scratch) |
-| `tpt-protocol-matter-thread` | Matter/Thread | Smart Home | Pattern B (wraps `rs-matter`) |
-| `tpt-protocol-coap` | CoAP | IoT | Pattern B (wraps `coap-lite`) |
+| `tpt-protocol-matter-thread` | Matter/Thread | Smart Home | Pattern A (scratch, MIT-compatible alt. to `rs-matter`) |
+| `tpt-protocol-coap` | CoAP | IoT | Pattern A (scratch, no_std alt. to `coap` crate) |
 
 ## Repository Structure
 
@@ -60,10 +60,10 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 tpt-protocol/
 ├── crates/tpt-protocol-tup/       # TUP schema (CBOR + JSON), no_std
 ├── crates/tpt-protocol-core/      # Core traits (FrameParser, StateValidator, DataNormalizer)
-├── crates/tpt-protocol-<name>/    # 19 protocol crates
+├── crates/tpt-protocol-<name>/    # 17 published protocol crates (Pattern A — scratch)
+├── crates/out-protocol-<name>/    # 2 private from-scratch implementations (not published)
 ├── crates/tpt-protocol-daemon/    # Background service
 ├── crates/tpt-protocol-cli/       # TUI (ratatui dashboard)
-├── out-protocol-<name>/           # Internal private implementations (not published)
 ├── SPEC-TUP.md                    # TUP schema specification
 └── Cargo.toml                     # Workspace root
 ```

@@ -679,6 +679,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "out-protocol-ethercat"
+version = "0.1.0"
+dependencies = [
+ "tpt-protocol-core",
+ "tpt-protocol-tup",
+]
+
+[[package]]
+name = "out-protocol-mavlink"
+version = "0.1.0"
+dependencies = [
+ "tpt-protocol-core",
+ "tpt-protocol-tup",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1235,6 +1251,7 @@ dependencies = [
 name = "tpt-protocol-core"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "tpt-protocol-tup",
 ]
 
@@ -1264,14 +1281,6 @@ dependencies = [
 
 [[package]]
 name = "tpt-protocol-doip-someip"
-version = "0.1.0"
-dependencies = [
- "tpt-protocol-core",
- "tpt-protocol-tup",
-]
-
-[[package]]
-name = "tpt-protocol-ethercat"
 version = "0.1.0"
 dependencies = [
  "tpt-protocol-core",
@@ -1320,14 +1329,6 @@ dependencies = [
 
 [[package]]
 name = "tpt-protocol-matter-thread"
-version = "0.1.0"
-dependencies = [
- "tpt-protocol-core",
- "tpt-protocol-tup",
-]
-
-[[package]]
-name = "tpt-protocol-mavlink"
 version = "0.1.0"
 dependencies = [
  "tpt-protocol-core",

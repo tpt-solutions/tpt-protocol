@@ -2,7 +2,7 @@
 
 OCPP 2.0.1 EV charging station protocol parser.
 
-**Pattern B** — Implements `FrameParser`, `StateValidator`, and `DataNormalizer`.
+Implements `FrameParser`, `StateValidator`, and `DataNormalizer`.
 
 ## Frame Format
 

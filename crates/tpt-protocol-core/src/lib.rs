@@ -110,6 +110,22 @@ pub trait DataNormalizer {
     }
 }
 
+/// Protocol plugin trait for the daemon's plugin architecture.
+///
+/// Implementations produce a stream of TUP `DataPoint` values
+/// (from simulated or real hardware).
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub trait ProtocolPlugin: Send + 'static {
+    fn simulate(
+        self: alloc::boxed::Box<Self>,
+    ) -> core::pin::Pin<
+        alloc::boxed::Box<
+            dyn futures_util::stream::Stream<Item = tpt_protocol_tup::DataPoint> + Send,
+        >,
+    >;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

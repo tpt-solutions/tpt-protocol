@@ -2,7 +2,7 @@
 
 CoAP (RFC 7252) constrained IoT protocol parser.
 
-**Pattern B** — Implements `FrameParser`, `StateValidator`, and `DataNormalizer`.
+Implements `FrameParser`, `StateValidator`, and `DataNormalizer`.
 
 ## Frame Format
 

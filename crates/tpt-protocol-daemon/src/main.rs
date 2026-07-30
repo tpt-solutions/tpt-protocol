@@ -11,11 +11,8 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use tpt_protocol_core::ProtocolPlugin;
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
-
-trait ProtocolPlugin: Send + 'static {
-    fn simulate(self: Box<Self>) -> Pin<Box<dyn Stream<Item = DataPoint> + Send>>;
-}
 
 struct ModbusPlugin;
 

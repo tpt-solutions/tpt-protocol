@@ -1,7 +1,7 @@
 [package]
 name = "tpt-protocol-matter-thread"
 version = "0.1.0"
-description = "Matter/Thread smart home mesh protocol parser"
+description = "Matter/Thread implementation, MIT OR Apache-2.0 (rs-matter is Apache-2.0 only)"
 keywords = ["tpt", "protocol", "industrial", "embedded"]
 categories = ["encoding", "network-programming", "embedded"]
 authors.workspace = true

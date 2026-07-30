@@ -1,7 +1,7 @@
 [package]
 name = "tpt-protocol-coap"
 version = "0.1.0"
-description = "CoAP constrained IoT protocol parser"
+description = "CoAP (RFC 7252) implementation, no_std (coap-rs requires std + tokio)"
 keywords = ["tpt", "protocol", "industrial", "embedded"]
 categories = ["encoding", "network-programming", "embedded"]
 authors.workspace = true

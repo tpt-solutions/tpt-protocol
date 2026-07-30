@@ -1,4 +1,4 @@
-# tpt-protocol-mavlink
+# out-protocol-mavlink
 
 MAVLink drone telemetry protocol parser (v1 and v2) for the TPT telemetry pipeline.
 

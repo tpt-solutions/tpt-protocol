@@ -1,7 +1,8 @@
 [package]
-name = "tpt-protocol-ethercat"
+name = "out-protocol-ethercat"
 version = "0.1.0"
-description = "EtherCAT high-performance factory automation protocol parser"
+description = "Private from-scratch EtherCAT implementation (not published; alternative to ethercrab crate)"
+publish = false
 keywords = ["tpt", "protocol", "industrial", "embedded"]
 categories = ["encoding", "network-programming", "embedded"]
 authors.workspace = true
