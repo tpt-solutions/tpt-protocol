@@ -76,14 +76,20 @@ fn main() {
 
     let frame_bytes = [0x5A, 0x07, 0x00, 0x00, 0x48, 0x42]; // sensor 7, 50.0 degC
     let frame = parser.parse(&frame_bytes).expect("parse");
-    println!("parsed sensor {} reading {}", frame.sensor_id, frame.reading);
+    println!(
+        "parsed sensor {} reading {}",
+        frame.sensor_id, frame.reading
+    );
 
     assert!(validator.validate(&frame.sensor_id).is_ok());
 
     let dp = normalizer.normalize(&frame).expect("normalize");
     println!(
         "normalized: {} {} = {:?} {}",
-        dp.device_id, dp.point_id, dp.value, dp.unit.as_deref().unwrap_or("")
+        dp.device_id,
+        dp.point_id,
+        dp.value,
+        dp.unit.as_deref().unwrap_or("")
     );
     assert_eq!(dp.source_protocol, SourceProtocol::Modbus);
 }

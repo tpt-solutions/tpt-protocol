@@ -139,9 +139,9 @@ impl FrameParser for Dnp3Parser {
         let source = u16::from_le_bytes([bytes[6], bytes[7]]);
 
         let expected_total = length as usize + 2; // +2 for start bytes
-        // The data-link CRC lives at bytes[8..10], so we must have the full
-        // 10-byte header (start + length + control + dest + src + CRC) before
-        // indexing it, independent of the advertised `length` field.
+                                                  // The data-link CRC lives at bytes[8..10], so we must have the full
+                                                  // 10-byte header (start + length + control + dest + src + CRC) before
+                                                  // indexing it, independent of the advertised `length` field.
         if bytes.len() < 10 || bytes.len() < expected_total {
             return Err(Error::Parse(format!(
                 "DNP3 truncated: have {} bytes, need at least {}",

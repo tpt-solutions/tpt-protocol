@@ -49,9 +49,6 @@ fn main() {
         .expect("parsed frame should normalize to a DataPoint");
     println!(
         "normalized: {} {} = {:?} ({})",
-        dp.source_protocol,
-        dp.point_id,
-        dp.value,
-        dp.quality
+        dp.source_protocol, dp.point_id, dp.value, dp.quality
     );
 }

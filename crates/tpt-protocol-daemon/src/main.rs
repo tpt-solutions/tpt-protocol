@@ -168,10 +168,16 @@ async fn main() -> Result<()> {
 
     if let Some(ref replay_path) = args.replay {
         let raw = tokio::fs::read_to_string(replay_path).await?;
-        let bytes = if let Some(hex_str) = raw.trim().strip_prefix("0x").or_else(|| raw.trim().strip_prefix("0X")) {
-            hex::decode(hex_str.trim()).map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
+        let bytes = if let Some(hex_str) = raw
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| raw.trim().strip_prefix("0X"))
+        {
+            hex::decode(hex_str.trim())
+                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
         } else if raw.trim().chars().all(|c| c.is_ascii_hexdigit()) && raw.trim().len() % 2 == 0 {
-            hex::decode(raw.trim()).map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
+            hex::decode(raw.trim())
+                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
         } else {
             tokio::fs::read(replay_path).await?
         };
@@ -193,8 +199,7 @@ async fn main() -> Result<()> {
 
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
 
-    let plugin = plugins::build_plugin(protocol)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plugin = plugins::build_plugin(protocol).map_err(|e| anyhow::anyhow!("{e}"))?;
     let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
     let sim_tx = tx.clone();
     tokio::spawn(async move {
@@ -229,7 +234,10 @@ mod tests {
         // There are 19 protocol crates wired into the daemon.
         assert_eq!(plugins::list_protocols().len(), 19);
         for name in plugins::list_protocols() {
-            assert!(plugins::build_plugin(name).is_ok(), "failed to build {name}");
+            assert!(
+                plugins::build_plugin(name).is_ok(),
+                "failed to build {name}"
+            );
         }
         assert!(plugins::build_plugin("not-a-protocol").is_err());
     }

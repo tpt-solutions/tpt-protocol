@@ -352,12 +352,17 @@ mod tests {
 
     #[test]
     fn truncate_respects_char_boundary() {
-        // "é" is 2 bytes; truncating to an odd byte count must not panic.
-        let s = "café1234567890";
-        let t = truncate_to(s, 18);
+        // A multibyte char ("é", 2 bytes) straddling the cut must not panic.
+        let s = "abcéfghijklmnopqrstuvwxyz0123456789";
+        let t = truncate_to(s, 4);
+        assert!(s.starts_with(t.trim_end_matches("..")));
         assert!(t.ends_with(".."));
-        assert!(s.starts_with(&t[..t.len() - 2]));
-        assert!(truncate_to(s, 4).starts_with("caf"));
+
+        // A long ASCII string truncates and appends the marker.
+        let long = "x".repeat(40);
+        let t2 = truncate_to(&long, 18);
+        assert!(t2.ends_with(".."));
+        assert_eq!(t2.len(), 20);
     }
 
     #[test]

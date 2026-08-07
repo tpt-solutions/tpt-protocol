@@ -115,4 +115,3 @@ mod schema_tests {
         );
     }
 }
-
