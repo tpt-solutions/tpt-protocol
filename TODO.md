@@ -44,7 +44,7 @@ and `mavlink` stay `out-protocol-*` (private).
 Deferred regardless of protocol progress (see **Later / Deferred** at the
 bottom): the embedded UI, the web UI, and formal verification (`tpt-telos`).
 
-**Status: Phases 0-3, 5-7 COMPLETE. 4 in progress (blocked on go-ahead). 8 COMPLETE.**
+**Status: Phases 0-3, 6-7 COMPLETE. 4 in progress (blocked on go-ahead). 5 partially complete (simulation-only, see correction below). 8 COMPLETE. 9 in progress.**
 
 ## Phase 0 — Repo & Workspace Bootstrap
 - [x] `git init` + Rust `.gitignore`, initial commit
@@ -107,9 +107,9 @@ Publish order: `tpt-protocol-tup` → `tpt-protocol-core` → 19 protocol crates
 
 ## Phase 5 — `tpt-protocol-daemon`
 - [x] Scaffold std binary crate; depends on `core` + whichever protocol crates are ready
-- [x] Transport-agnostic plugin architecture: daemon enables protocol crates via a common trait, not hardcoded to one protocol
+- [ ] Transport-agnostic plugin architecture: daemon enables protocol crates via a common trait, not hardcoded to one protocol — **corrected 2026-08-07: only Modbus is wired in today; `ProtocolPlugin` itself only has `simulate()`, no real-I/O method. Being closed out in Phase 9.3 (simulation for all 19, not real transport).**
 - [x] Simulated data source per protocol (fake frames, no hardware needed) — Modbus with temperature/pressure/status
-- [x] Real transport clients (Serial/CAN/TCP/UDP) behind a common transport trait, added incrementally as each protocol lands
+- [ ] Real transport clients (Serial/CAN/TCP/UDP) behind a common transport trait, added incrementally as each protocol lands — **corrected 2026-08-07: none exist (no serial/CAN dep anywhere). Moved to Later/Deferred; Phase 9.3 only adds simulation for the remaining 18 protocols.**
 - [x] Local WebSocket API, bound to `127.0.0.1` only, streaming TUP-JSON
 - [x] Basic config: simulated vs real device mode, protocol selection (CLI args or TOML)
 
@@ -149,8 +149,90 @@ Publish order: `tpt-protocol-tup` → `tpt-protocol-core` → 19 protocol crates
 - [x] Add structured typed error variants to `Error` enum
 - [x] `DataPoint` builder (`with_timestamp`, `with_quality`) to complement `with_unit`/`with_raw`
 
+## Phase 9 — Security Hardening, Daemon Completion, Adoption Tooling
+
+Scope: full-repo review (2026-08-07) found the daemon overstates its own
+Phase 5 status (only Modbus is wired, simulation-only, no real transport
+exists), plus 8 concrete panic/overflow/allocation bugs in protocol parsers
+findable with inputs as small as 8-20 bytes (no fuzzing existed to catch
+them). This phase closes both gaps and adds core adoption tooling.
+
+### 9.1 — Truth reconciliation & cleanup
+- [ ] Resolve 6 `#[allow(dead_code)]` spots: delete genuinely-dead
+      `Hl7MessageType::as_str`, `InteractionType::as_str`; make
+      `CoapCode::as_u8`, `KnxServiceType::as_str`, `GroupAddress::to_u16`
+      `pub` round-trip API instead of suppressing the lint
+- [ ] Dedupe NMEA: make production checksum logic call
+      `compute_nmea_checksum` instead of duplicating it inline
+
+### 9.2 — Security fixes (audit findings, each with a regression test)
+- [ ] DNP3 OOB panic on truncated frame (`dnp3/src/lib.rs:141-151`,
+      truncation guard doesn't cover trailing CRC bytes)
+- [ ] Matter-Thread off-by-one OOB panic on Float TLV
+      (`matter-thread/src/lib.rs:159-167`, guard should be `< 21` not `< 20`)
+- [ ] NMEA panic on empty talker/sentence slice
+      (`nmea/src/lib.rs:27-30,70-74`, missing `is_empty()` guard)
+- [ ] HL7v2 panic on non-UTF8-char-boundary slice
+      (`hl7v2/src/lib.rs:105-106,152-153`)
+- [ ] CLI panic on non-UTF8-char-boundary slice truncating device_id/point_id
+      (`cli/src/main.rs:220-228`)
+- [ ] DoIP/SOME-IP + OCPP `u32` length integer overflow into invalid slice
+      range (`doip-someip/src/lib.rs:225`, `ocpp/src/lib.rs:155-165`) —
+      switch to `checked_add`
+- [ ] Unbounded allocation from wire-controlled count: IEEE11073-SDC
+      (`ieee11073-sdc/src/lib.rs:104,179,214,240`), SparkplugB
+      (`sparkplugb/src/lib.rs:92`), Modbus (`modbus/src/lib.rs:430`, lower
+      severity) — cap `with_capacity` to remaining-buffer-derived bound
+- [ ] Daemon: warn (not silently allow) when `--bind` isn't a loopback
+      address
+- [ ] Daemon: drop unused `native-tls` feature from `tokio-tungstenite`
+      dep (no TLS acceptor exists; pulls in `openssl` for nothing)
+- [ ] Root `Cargo.toml`: `overflow-checks = true` in `[profile.release]`
+- [ ] Add `proptest` dev-dependency + a per-protocol-crate property test
+      feeding random bytes into `FrameParser::parse`, asserting no panic
+      (all 19 protocol crates)
+- [ ] Documented follow-up (not fixed this pass): MAVLink CRC validation
+      omits the real per-message `CRC_EXTRA` seed byte — correctness gap,
+      not memory-safety; needs the full message-ID→seed table
+
+### 9.3 — Daemon: wire all 19 protocols as simulated plugins
+- [ ] Split `daemon/src/main.rs`'s inline `ModbusPlugin` into a
+      `src/plugins/` module, one simulated `ProtocolPlugin` impl per
+      protocol crate (19 total)
+- [ ] Extend daemon's protocol-name dispatch to cover all 19
+- [ ] Add `--list-protocols` flag
+- [ ] Add `--replay <file>` mode: run raw bytes from a file through a
+      chosen protocol's `FrameParser`/`DataNormalizer` instead of only
+      synthetic simulation
+- [ ] Vary simulated `Quality` (`Uncertain`/`Bad`/`Stale`, not just `Good`)
+      so the CLI's color coding is demoable out of the box
+- [ ] Update daemon README + root README quick-start for all-19 support
+- [ ] Un-check "Real transport clients (Serial/CAN/TCP/UDP)" in Phase 5
+      above once this lands — simulation-only, real transport is still
+      not implemented and stays future work
+
+### 9.4 — Adoption tooling (core essentials)
+- [ ] `CONTRIBUTING.md` (dev setup, workspace commands, how to add
+      protocol crate #20)
+- [ ] `CHANGELOG.md` (Keep a Changelog format)
+- [ ] Runnable examples: `tup/examples/roundtrip.rs`,
+      `core/examples/custom_protocol.rs`, `modbus/examples/parse_frame.rs`
+- [ ] `daemon/daemon.example.toml` + Python/JS client snippets showing how
+      to consume the TUP WebSocket stream without Rust
+- [ ] `scripts/new-protocol-crate.sh` scaffolding script (generates
+      Cargo.toml + lib.rs skeleton + README template + registers the new
+      workspace member)
+- [ ] Standalone `schema/tup-v1.cddl` + `schema/tup-v1.schema.json`,
+      referenced from `SPEC-TUP.md`, with a test validating the spec's
+      worked JSON example against the schema
+- [ ] `deny.toml` + `cargo-deny` CI job (license allow-list, advisories,
+      duplicate-version bans)
+
 ## Later / Deferred
 - [ ] `ui-embedded` (Slint/Iced native cab UI)
 - [ ] `ui-web` (Tauri v2 + SvelteKit fleet dashboard)
 - [ ] Formal verification (`tpt-telos`) for critical state machines
 - [ ] Dedicated low-latency IPC channel (Unix socket/named pipe) if WebSocket proves insufficient for the TUI
+- [ ] Real transport clients (Serial/CAN/TCP/UDP) for the daemon — genuine
+      hardware I/O, beyond Phase 9.3's simulation-only wiring
+- [ ] MAVLink `CRC_EXTRA` per-message seed table for full spec compliance

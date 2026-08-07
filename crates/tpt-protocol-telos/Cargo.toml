@@ -1,0 +1,28 @@
+[package]
+name = "tpt-protocol-telos"
+version = "0.1.0"
+description = "Formal verification specs for TPT Protocol critical state machines (tpt-telos)"
+keywords = ["tpt", "protocol", "formal-methods", "verification", "embedded"]
+categories = ["science::verification"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Verification dependencies are heavy (parser/IR/verifier) and std-only, so
+# they are gated behind the `verify` feature and not pulled in by default.
+tpt-telos-parser = { workspace = true, optional = true }
+tpt-telos-ir = { workspace = true, optional = true }
+tpt-telos-verifier = { workspace = true, optional = true }
+
+[features]
+# Enables the formal-verification harness and the bundled-spec test.
+# Off by default so the crate's dependency surface stays minimal.
+verify = ["dep:tpt-telos-parser", "dep:tpt-telos-ir", "dep:tpt-telos-verifier"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

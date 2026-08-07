@@ -30,16 +30,6 @@ impl Hl7MessageType {
         }
     }
 
-    #[allow(dead_code)]
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Adt => "ADT",
-            Self::Orm => "ORM",
-            Self::Oru => "ORU",
-            Self::Mdm => "MDM",
-            Self::Other(s) => s.as_str(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -1,0 +1,32 @@
+[package]
+name = "tpt-protocol-ui-web"
+version = "0.1.0"
+description = "Tauri v2 + SvelteKit fleet dashboard for the TPT Protocol daemon"
+keywords = ["tpt", "protocol", "ui", "tauri", "dashboard"]
+categories = ["gui"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+name = "tpt_protocol_ui_web_lib"
+path = "src-tauri/src/lib.rs"
+
+[[bin]]
+name = "tpt-protocol-ui-web"
+path = "src-tauri/src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+tpt-protocol-tup = { workspace = true }

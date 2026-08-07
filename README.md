@@ -21,10 +21,10 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 ├───────────────┤   │   │   │   DataNormalizer)      │  │   │  │  (CLI)         │
 │  J1939/ISOBUS │───┼───┼──▶│   ──────────────────▶  │  │──┼──▶├────────────────┤
 │  ECU          │   │   │   │   TUP (CBOR/JSON)      │  │   │  │  Embedded UI   │
-├───────────────┤   │   │   └────────────────────────┘  │   │  │  (deferred)    │
+├───────────────┤   │   │   └────────────────────────┘  │   │  │  (Slint)       │
 │  BACnet       │───┼───┼──▶│  ┌────────────────────┐   │   │  ├────────────────┤
 │  Building     │   │   │   │  │ Local WebSocket/   │   │   │  │  Web UI        │
-├───────────────┤   │   │   │  │ REST API (127.0.0.1)│   │   │  │  (deferred)    │
+├───────────────┤   │   │   │  │ REST API (127.0.0.1)│   │   │  │  (Tauri/Svelte)│
 │  ...16 more   │───┼───┼──▶│  └────────────────────┘   │   │  └────────────────┘
 └───────────────┘   │   └──────────────────────────────┘   │
                     └──────────────────────────────────────┘
@@ -64,6 +64,9 @@ tpt-protocol/
 ├── crates/out-protocol-<name>/    # 2 private from-scratch implementations (not published)
 ├── crates/tpt-protocol-daemon/    # Background service
 ├── crates/tpt-protocol-cli/       # TUI (ratatui dashboard)
+├── crates/tpt-protocol-ui-embedded/ # Native embedded UI (Slint)
+├── crates/tpt-protocol-ui-web/    # Web fleet dashboard (Tauri v2 + SvelteKit)
+├── crates/tpt-protocol-telos/     # Formal-verification specs (tpt-telos)
 ├── SPEC-TUP.md                    # TUP schema specification
 └── Cargo.toml                     # Workspace root
 ```
@@ -89,7 +92,7 @@ cargo run --bin tpt-protocol-cli
 - **no_std by default**: All protocol crates compile to bare-metal targets (`thumbv6m-none-eabi`).
 - **Local-first**: The daemon binds its API to `127.0.0.1` only. Zero telemetry, zero cloud dependency.
 - **TUP envelope**: Every protocol normalizes into the TPT Unified Protocol — CBOR on the wire, JSON for the UI, openly specified in `SPEC-TUP.md`.
-- **Memory-safe**: Written in Rust. Critical state machines target formal verification.
+- **Memory-safe**: Written in Rust. Critical state machines are formally verified with [`tpt-telos`](https://crates.io/crates/tpt-telos) (`tpt-protocol-telos`).
 
 ## License
 

@@ -1,0 +1,1 @@
+{"tpt-protocol-ui-web-capability":{"identifier":"tpt-protocol-ui-web-capability","description":"Core capabilities for the TPT Protocol fleet dashboard webview.","local":true,"windows":["main"],"permissions":["core:default","core:webview:allow-internal-toggle-devtools"]}}

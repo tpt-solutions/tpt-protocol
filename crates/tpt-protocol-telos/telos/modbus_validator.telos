@@ -1,0 +1,24 @@
+// Modbus connection-health state machine.
+//
+// The validator tracks an error counter that resets to 0 on a good frame and
+// increments on a bad frame, staying non-negative. We prove the increments are
+// exact and the counter never goes negative, which is the arithmetic core of
+// the threshold logic in tpt-protocol-modbus.
+
+module ModbusValidator {
+    struct Device {
+        error_count: Int,
+    }
+
+    invariant CounterBounded { error_count >= 0 }
+
+    func on_ok(d: Device)
+        requires d.error_count >= 0
+        ensures d.error_count == 0
+    { mutate state { d.error_count = 0 } }
+
+    func on_err(d: Device)
+        requires d.error_count >= 0
+        ensures d.error_count == old(d.error_count) + 1
+    { mutate state { d.error_count = d.error_count + 1 } }
+}

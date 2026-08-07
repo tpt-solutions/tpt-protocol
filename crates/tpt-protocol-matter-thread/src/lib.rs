@@ -35,15 +35,6 @@ impl InteractionType {
         }
     }
 
-    #[allow(dead_code)]
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Read => "Read",
-            Self::Write => "Write",
-            Self::Invoke => "Invoke",
-            Self::Subscribe => "Subscribe",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

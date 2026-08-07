@@ -25,6 +25,9 @@ pub enum Talker {
 
 impl Talker {
     fn from_bytes(b: &[u8]) -> Self {
+        if b.is_empty() {
+            return Self::Unknown([0, 0]);
+        }
         if b.len() < 2 {
             return Self::Unknown([b[0], 0]);
         }
@@ -69,6 +72,9 @@ pub enum SentenceType {
 
 impl SentenceType {
     fn from_bytes(b: &[u8]) -> Self {
+        if b.is_empty() {
+            return Self::Unknown([0, 0, 0]);
+        }
         if b.len() < 3 {
             return Self::Unknown([b[0], b.get(1).copied().unwrap_or(0), 0]);
         }
@@ -164,7 +170,7 @@ impl FrameParser for NmeaParser {
         let expected_csum = u8::from_str_radix(csum_str, 16)
             .map_err(|_| Error::Parse("NMEA: invalid checksum hex".into()))?;
 
-        let computed_csum = bytes[1..csum_star].iter().fold(0u8, |acc, &b| acc ^ b);
+        let computed_csum = compute_nmea_checksum(&bytes[1..csum_star]);
 
         let checksum_valid = computed_csum == expected_csum;
 
@@ -235,15 +241,9 @@ impl StateValidator for NmeaValidator {
     }
 }
 
-/// Normalizes NMEA frames into TUP DataPoints.
-#[allow(dead_code)]
-fn compute_nmea_checksum(sentence: &str) -> u8 {
-    let bytes = sentence.as_bytes();
-    let start = if bytes.first() == Some(&b'$') { 1 } else { 0 };
-    bytes[start..]
-        .iter()
-        .take_while(|&&b| b != b'*')
-        .fold(0u8, |acc, &b| acc ^ b)
+/// XOR checksum over the given bytes (the NMEA body between `$` and `*`).
+fn compute_nmea_checksum(body: &[u8]) -> u8 {
+    body.iter().fold(0u8, |acc, &b| acc ^ b)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -302,7 +302,7 @@ mod tests {
             s.push(',');
             s.push_str(f);
         }
-        let csum = compute_nmea_checksum(&s);
+        let csum = compute_nmea_checksum(s[1..].as_bytes());
         s.push('*');
         s.push_str(&alloc::format!("{:02X}", csum));
         s.push_str("\r\n");
