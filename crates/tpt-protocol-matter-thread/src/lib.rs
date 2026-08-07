@@ -34,7 +34,6 @@ impl InteractionType {
             _ => None,
         }
     }
-
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -148,7 +147,7 @@ impl FrameParser for MatterParser {
                 MatterData::Int(v)
             }
             2 => {
-                if bytes.len() < 20 {
+                if bytes.len() < 21 {
                     return Err(Error::Parse("truncated tlv float".into()));
                 }
                 let v = f64::from_be_bytes([
@@ -247,6 +246,7 @@ impl DataNormalizer for MatterNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     fn make_onoff_frame(on: bool) -> Vec<u8> {
         let mut buf = Vec::new();
@@ -369,5 +369,34 @@ mod tests {
             node_id: 0,
         };
         assert!(v.validate(&s).is_err());
+    }
+
+    #[test]
+    fn float_tlv_off_by_one_no_panic() {
+        // Float TLV reads bytes[13..=20] but previously only guarded len < 20,
+        // so a 20-byte frame indexing bytes[20] panicked.
+        let parser = MatterParser;
+        let mut bytes = vec![0u8; 20];
+        bytes[0] = 0; // Matter
+        bytes[11] = 0; // Read (valid interaction type)
+        bytes[12] = 2; // Float TLV
+        let result = parser.parse(&bytes);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = MatterParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

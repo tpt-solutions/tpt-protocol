@@ -138,12 +138,15 @@ impl FrameParser for Dnp3Parser {
         let destination = u16::from_le_bytes([bytes[4], bytes[5]]);
         let source = u16::from_le_bytes([bytes[6], bytes[7]]);
 
-        let expected_total = length as usize + 2; // +2 for CRC
-        if bytes.len() < expected_total {
+        let expected_total = length as usize + 2; // +2 for start bytes
+        // The data-link CRC lives at bytes[8..10], so we must have the full
+        // 10-byte header (start + length + control + dest + src + CRC) before
+        // indexing it, independent of the advertised `length` field.
+        if bytes.len() < 10 || bytes.len() < expected_total {
             return Err(Error::Parse(format!(
-                "DNP3 truncated: have {} bytes, need {}",
+                "DNP3 truncated: have {} bytes, need at least {}",
                 bytes.len(),
-                expected_total,
+                expected_total.max(10),
             )));
         }
 
@@ -404,5 +407,38 @@ mod tests {
             error_count: 0,
         };
         assert!(validator.validate(&state).is_err());
+    }
+
+    #[test]
+    fn truncated_short_header_no_panic() {
+        // length field = 0 claims a 2-byte frame, but the parser indexes the
+        // data-link CRC at bytes[8..10]. A 9-byte buffer must not panic.
+        let parser = Dnp3Parser::new();
+        let result = parser.parse(&[0x05, 0x64, 0x00, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn truncated_length_seven_no_panic() {
+        // length field = 7 -> expected_total = 9, leaving bytes[9] unguarded.
+        let parser = Dnp3Parser::new();
+        let result = parser.parse(&[0x05, 0x64, 0x07, 0x44, 0x01, 0x00, 0x01, 0x00, 0x00]);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = Dnp3Parser::new();
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

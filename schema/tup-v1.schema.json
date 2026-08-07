@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://tpt-protocol.dev/schema/tup-v1.schema.json",
+  "title": "TPT Unified Protocol (TUP) v1",
+  "description": "JSON mirror encoding of the TUP envelope (see SPEC-TUP.md). Field-for-field equivalent of tup-v1.cddl. Note: the CBOR `bytes` value/raw types map to JSON strings in this mirror encoding.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_protocol",
+    "device_id",
+    "point_id",
+    "timestamp",
+    "value",
+    "quality"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "source_protocol": {
+      "type": "string",
+      "enum": [
+        "modbus", "j1939", "isobus", "uds", "canopen", "doip-someip", "nmea",
+        "mavlink", "bacnet", "opcua", "dnp3", "ethercat", "sparkplugb", "ocpp",
+        "ieee11073-sdc", "hl7v2", "knx", "matter-thread", "coap"
+      ]
+    },
+    "device_id": { "type": "string" },
+    "point_id": { "type": "string" },
+    "timestamp": { "type": "integer", "minimum": 0 },
+    "value": {
+      "type": ["integer", "number", "boolean", "string"]
+    },
+    "unit": { "type": "string" },
+    "quality": {
+      "type": "string",
+      "enum": ["good", "bad", "stale", "uncertain"]
+    },
+    "raw": { "type": "string" }
+  },
+  "additionalProperties": true
+}

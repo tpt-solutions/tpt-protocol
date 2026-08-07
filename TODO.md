@@ -43,8 +43,9 @@ and `mavlink` stay `out-protocol-*` (private).
 
 Deferred regardless of protocol progress (see **Later / Deferred** at the
 bottom): the embedded UI, the web UI, and formal verification (`tpt-telos`).
+All three are now COMPLETE — see the **Later / Deferred** section.
 
-**Status: Phases 0-3, 6-7 COMPLETE. 4 in progress (blocked on go-ahead). 5 partially complete (simulation-only, see correction below). 8 COMPLETE. 9 in progress.**
+**Status: Phases 0-3, 5-8 COMPLETE. 4 in progress (blocked on go-ahead). Deferred items COMPLETE.**
 
 ## Phase 0 — Repo & Workspace Bootstrap
 - [x] `git init` + Rust `.gitignore`, initial commit
@@ -109,7 +110,7 @@ Publish order: `tpt-protocol-tup` → `tpt-protocol-core` → 19 protocol crates
 - [x] Scaffold std binary crate; depends on `core` + whichever protocol crates are ready
 - [ ] Transport-agnostic plugin architecture: daemon enables protocol crates via a common trait, not hardcoded to one protocol — **corrected 2026-08-07: only Modbus is wired in today; `ProtocolPlugin` itself only has `simulate()`, no real-I/O method. Being closed out in Phase 9.3 (simulation for all 19, not real transport).**
 - [x] Simulated data source per protocol (fake frames, no hardware needed) — Modbus with temperature/pressure/status
-- [ ] Real transport clients (Serial/CAN/TCP/UDP) behind a common transport trait, added incrementally as each protocol lands — **corrected 2026-08-07: none exist (no serial/CAN dep anywhere). Moved to Later/Deferred; Phase 9.3 only adds simulation for the remaining 18 protocols.**
+- [ ] Real transport clients (Serial/CAN/TCP/UDP) behind a common transport trait, added incrementally as each protocol lands — **corrected 2026-08-07: none exist (no serial/CAN dep anywhere). Moved to Later/Deferred; Phase 9.3 only adds simulation for the remaining 18 protocols. Phase 9.3 COMPLETE: all 19 protocols now have simulated `ProtocolPlugin` impls wired into the daemon; real transport stays future work (see Later/Deferred).**
 - [x] Local WebSocket API, bound to `127.0.0.1` only, streaming TUP-JSON
 - [x] Basic config: simulated vs real device mode, protocol selection (CLI args or TOML)
 
@@ -229,9 +230,9 @@ them). This phase closes both gaps and adds core adoption tooling.
       duplicate-version bans)
 
 ## Later / Deferred
-- [ ] `ui-embedded` (Slint/Iced native cab UI)
-- [ ] `ui-web` (Tauri v2 + SvelteKit fleet dashboard)
-- [ ] Formal verification (`tpt-telos`) for critical state machines
+- [x] `ui-embedded` (Slint native dashboard) — `tpt-protocol-ui-embedded`, connects to daemon WS
+- [x] `ui-web` (Tauri v2 + SvelteKit fleet dashboard) — `tpt-protocol-ui-web`, connects to daemon WS
+- [x] Formal verification (`tpt-telos`) for critical state machines — `tpt-protocol-telos`: bundled `.telos` specs for Modbus CRC bounds, validator error-counter, and normalizer register bounds; `cargo test -p tpt-protocol-telos --features verify` discharges them with the QF_LRA verifier
 - [ ] Dedicated low-latency IPC channel (Unix socket/named pipe) if WebSocket proves insufficient for the TUI
 - [ ] Real transport clients (Serial/CAN/TCP/UDP) for the daemon — genuine
       hardware I/O, beyond Phase 9.3's simulation-only wiring

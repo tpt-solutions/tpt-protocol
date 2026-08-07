@@ -80,3 +80,39 @@ impl DataPoint {
 pub mod json;
 
 pub mod cbor;
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    /// The worked example from SPEC-TUP.md §4, kept in sync with
+    /// `schema/tup-v1.schema.json`.
+    const WORKED_EXAMPLE: &str = r#"{
+      "schema_version": 1,
+      "source_protocol": "modbus",
+      "device_id": "modbus-tcp://10.0.4.12:502/unit-1",
+      "point_id": "holding-register:40001",
+      "timestamp": 1753900000000,
+      "value": 68.5,
+      "unit": "degF",
+      "quality": "good"
+    }"#;
+
+    #[test]
+    fn worked_example_matches_json_schema() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../../../schema/tup-v1.schema.json"))
+                .expect("schema file is valid JSON");
+        let instance: serde_json::Value =
+            serde_json::from_str(WORKED_EXAMPLE).expect("worked example is valid JSON");
+
+        let compiled = jsonschema::JSONSchema::compile(&schema).expect("schema compiles");
+        let result = compiled.validate(&instance);
+        assert!(
+            result.is_ok(),
+            "worked example failed schema validation: {:?}",
+            result.err().map(|e| e.collect::<Vec<_>>())
+        );
+    }
+}
+

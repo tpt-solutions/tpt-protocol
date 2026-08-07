@@ -302,7 +302,7 @@ mod tests {
             s.push(',');
             s.push_str(f);
         }
-        let csum = compute_nmea_checksum(s[1..].as_bytes());
+        let csum = compute_nmea_checksum(&s.as_bytes()[1..]);
         s.push('*');
         s.push_str(&alloc::format!("{:02X}", csum));
         s.push_str("\r\n");
@@ -444,5 +444,21 @@ mod tests {
             error_count: 0,
         };
         assert!(validator.validate(&state).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = NmeaParser::new();
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

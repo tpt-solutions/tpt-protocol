@@ -83,8 +83,8 @@ pub fn verify_dir(dir: &str) -> Result<Vec<VerificationReport>, TelosError> {
 /// Parse, extract, and verify a single `.telos` source string.
 #[cfg(feature = "verify")]
 pub fn verify_source(src: &str) -> Result<VerificationReport, TelosError> {
-    use tpt_telos_parser::parse;
     use tpt_telos_ir::extract;
+    use tpt_telos_parser::parse;
     use tpt_telos_verifier::verify;
 
     let modules = parse(src).map_err(TelosError::Parse)?;

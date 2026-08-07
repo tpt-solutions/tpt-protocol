@@ -25,8 +25,7 @@ async fn main() -> anyhow::Result<()> {
     let model = std::rc::Rc::new(VecModel::<DataRow>::from(vec![]));
     ui.set_rows(ModelRc::from(model.clone()));
 
-    let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<tpt_protocol_tup::DataPoint>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tpt_protocol_tup::DataPoint>();
 
     // WebSocket reader task.
     tokio::spawn(async move {

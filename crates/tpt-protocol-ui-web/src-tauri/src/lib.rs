@@ -17,8 +17,7 @@ pub struct DaemonConfig {
 #[tauri::command]
 fn daemon_url() -> DaemonConfig {
     DaemonConfig {
-        url: std::env::var("TPT_DAEMON_URL")
-            .unwrap_or_else(|_| "ws://127.0.0.1:9080".to_string()),
+        url: std::env::var("TPT_DAEMON_URL").unwrap_or_else(|_| "ws://127.0.0.1:9080".to_string()),
     }
 }
 

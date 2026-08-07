@@ -1,0 +1,12 @@
+# Example configuration for tpt-protocol-daemon.
+# Pass with: cargo run --bin tpt-protocol-daemon -- --config daemon.example.toml
+
+# Protocol to simulate (see `--list-protocols` for all 19).
+simulate = "modbus"
+
+# WebSocket API port.
+port = 9080
+
+# Bind address. Loopback only by default — the API has no authentication.
+# A non-loopback bind prints a warning.
+bind = "127.0.0.1"

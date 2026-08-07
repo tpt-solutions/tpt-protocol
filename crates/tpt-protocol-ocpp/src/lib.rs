@@ -133,12 +133,12 @@ impl FrameParser for OcppParser {
         offset += id_len;
 
         let action = if message_type == OcppMessageType::Call {
-            if offset + 2 > bytes.len() {
+            if bytes.len().saturating_sub(offset) < 2 {
                 return Err(Error::Parse("truncated action length".into()));
             }
             let act_len = u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
             offset += 2;
-            if offset + act_len > bytes.len() {
+            if bytes.len().saturating_sub(offset) < act_len {
                 return Err(Error::Parse("truncated action".into()));
             }
             let action_str = core::str::from_utf8(&bytes[offset..offset + act_len])
@@ -149,7 +149,7 @@ impl FrameParser for OcppParser {
             OcppAction::Other(alloc::string::String::new())
         };
 
-        if offset + 4 > bytes.len() {
+        if bytes.len().saturating_sub(offset) < 4 {
             return Err(Error::Parse("truncated payload length".into()));
         }
         let payload_len = u32::from_be_bytes([
@@ -159,7 +159,7 @@ impl FrameParser for OcppParser {
             bytes[offset + 3],
         ]) as usize;
         offset += 4;
-        if offset + payload_len > bytes.len() {
+        if bytes.len().saturating_sub(offset) < payload_len {
             return Err(Error::Parse("truncated payload".into()));
         }
         let payload = core::str::from_utf8(&bytes[offset..offset + payload_len])
@@ -321,5 +321,37 @@ mod tests {
             error_count: 0,
         };
         assert!(validator.validate(&state).is_err());
+    }
+
+    #[test]
+    fn huge_payload_length_no_overflow() {
+        // Call frame with payload_length = u32::MAX. The previous `offset +
+        // payload_len` could overflow on 32-bit targets and then index an
+        // inverted range. Must return Err, never panic.
+        let bytes = [
+            2u8, // Call
+            0, 0, // unique id length = 0
+            0, 0, // action length = 0
+            0xFF, 0xFF, 0xFF, 0xFF, // payload length = u32::MAX
+        ];
+        let parser = OcppParser;
+        let result = parser.parse(&bytes);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = OcppParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

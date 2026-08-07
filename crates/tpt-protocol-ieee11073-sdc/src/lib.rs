@@ -10,6 +10,11 @@ use alloc::vec::Vec;
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
+/// Upper bound on the number of elements we will pre-allocate for from a
+/// wire-controlled count field. Caps `with_capacity` so a malicious or corrupt
+/// frame cannot trigger an unbounded heap allocation.
+const MAX_SDC_ELEMENTS: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SdcMessageType {
     Mdib,
@@ -101,7 +106,7 @@ impl FrameParser for SdcParser {
                 }
                 let count = u16::from_be_bytes([bytes[9], bytes[10]]) as usize;
                 let mut offset = 11usize;
-                let mut metrics = Vec::with_capacity(count);
+                let mut metrics = Vec::with_capacity(count.min(MAX_SDC_ELEMENTS));
                 for _ in 0..count {
                     if offset + 2 > bytes.len() {
                         return Err(Error::Parse("truncated handle length".into()));
@@ -176,7 +181,7 @@ impl FrameParser for SdcParser {
                 }
                 let count = u16::from_be_bytes([bytes[9], bytes[10]]) as usize;
                 let mut offset = 11usize;
-                let mut waveforms = Vec::with_capacity(count);
+                let mut waveforms = Vec::with_capacity(count.min(MAX_SDC_ELEMENTS));
                 for _ in 0..count {
                     if offset + 2 > bytes.len() {
                         return Err(Error::Parse("truncated waveform handle".into()));
@@ -211,7 +216,7 @@ impl FrameParser for SdcParser {
                     if offset + sample_count * 4 > bytes.len() {
                         return Err(Error::Parse("truncated samples".into()));
                     }
-                    let mut samples = Vec::with_capacity(sample_count);
+                    let mut samples = Vec::with_capacity(sample_count.min(MAX_SDC_ELEMENTS));
                     for _ in 0..sample_count {
                         let bits = u32::from_be_bytes([
                             bytes[offset],
@@ -237,7 +242,7 @@ impl FrameParser for SdcParser {
                 }
                 let count = u16::from_be_bytes([bytes[9], bytes[10]]) as usize;
                 let mut offset = 11usize;
-                let mut alerts = Vec::with_capacity(count);
+                let mut alerts = Vec::with_capacity(count.min(MAX_SDC_ELEMENTS));
                 for _ in 0..count {
                     if offset + 2 > bytes.len() {
                         return Err(Error::Parse("truncated alert handle".into()));
@@ -522,5 +527,33 @@ mod tests {
             last_sequence_id: 0,
         };
         assert!(v.validate(&s).is_err());
+    }
+
+    #[test]
+    fn huge_count_no_unbounded_alloc() {
+        // 11-byte frame with a 0xFFFF metric count: the parser must return Err
+        // (running out of buffer) without panicking or allocating 65k entries.
+        let parser = SdcParser;
+        for mt in 0u8..=2u8 {
+            let bytes = [mt, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF];
+            let result = parser.parse(&bytes);
+            assert!(result.is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = SdcParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

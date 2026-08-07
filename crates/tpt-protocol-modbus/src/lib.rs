@@ -11,6 +11,9 @@ use core::fmt;
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
+/// Upper bound on pre-allocated registers from a wire-controlled quantity field.
+const MAX_MODBUS_REGISTERS: usize = 1024;
+
 // ---------------------------------------------------------------------------
 // Modbus CRC-16 (CRC-16/Modbus)
 // ---------------------------------------------------------------------------
@@ -427,7 +430,7 @@ fn parse_pdu(func: u8, data: &[u8], _data_len: usize) -> Result<ModbusFrame, Err
             let address = u16::from_be_bytes([data[0], data[1]]);
             let quantity = u16::from_be_bytes([data[2], data[3]]);
             let _byte_count = data[4] as usize;
-            let mut values = Vec::with_capacity(quantity as usize);
+            let mut values = Vec::with_capacity((quantity as usize).min(MAX_MODBUS_REGISTERS));
             let mut offset = 5;
             for _ in 0..quantity as usize {
                 if offset + 2 > data.len() {
@@ -930,5 +933,31 @@ mod tests {
         let (frame, consumed) = result.unwrap();
         assert_eq!(consumed, bytes.len());
         assert_eq!(frame.slave_address, 0x01);
+    }
+
+    #[test]
+    fn write_multiple_huge_quantity_no_unbounded_alloc() {
+        // func=0x10 WriteMultipleRegisters with quantity=0xFFFF but only 2 bytes
+        // of register data present. Must return Err without allocating 65k u16.
+        let bytes = build_rtu_frame(0x01, 0x10, &[0x00, 0x00, 0xFF, 0xFF, 0x02, 0x00, 0x00]);
+        let parser = ModbusParser::new();
+        let result = parser.parse(&bytes);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = ModbusParser::new();
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

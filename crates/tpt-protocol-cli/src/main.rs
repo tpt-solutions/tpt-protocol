@@ -18,6 +18,20 @@ use tpt_protocol_tup::{json, DataPoint, Quality};
 const MAX_DATA_POINTS: usize = 100;
 const TICK_RATE: Duration = Duration::from_millis(100);
 
+/// Truncate `s` to at most `max` bytes, never splitting a UTF-8 character, and
+/// append `..` when truncation occurs. Avoids the panic that `&s[..max]` would
+/// cause on a multibyte character sitting on the boundary.
+fn truncate_to(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}..", &s[..end])
+}
+
 #[derive(Parser)]
 #[command(version, about = "TPT Protocol TUI Dashboard")]
 struct Cli {
@@ -218,12 +232,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .map(|dp| {
             let q_style = Style::new().fg(quality_color(&dp.quality));
             let device = if dp.device_id.len() > 18 {
-                format!("{}..", &dp.device_id[..18])
+                truncate_to(&dp.device_id, 18)
             } else {
                 dp.device_id.clone()
             };
             let point = if dp.point_id.len() > 18 {
-                format!("{}..", &dp.point_id[..18])
+                truncate_to(&dp.point_id, 18)
             } else {
                 dp.point_id.clone()
             };
@@ -330,4 +344,24 @@ fn main() -> Result<()> {
 
     ratatui::restore();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_respects_char_boundary() {
+        // "é" is 2 bytes; truncating to an odd byte count must not panic.
+        let s = "café1234567890";
+        let t = truncate_to(s, 18);
+        assert!(t.ends_with(".."));
+        assert!(s.starts_with(&t[..t.len() - 2]));
+        assert!(truncate_to(s, 4).starts_with("caf"));
+    }
+
+    #[test]
+    fn truncate_short_is_untouched() {
+        assert_eq!(truncate_to("abc", 18), "abc");
+    }
 }

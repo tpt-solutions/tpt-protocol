@@ -71,9 +71,8 @@ pub enum CoapCode {
     Unknown(u8),
 }
 
-#[allow(dead_code)]
 impl CoapCode {
-    fn from_u8(v: u8) -> Self {
+    pub fn from_u8(v: u8) -> Self {
         match v {
             0 => Self::Empty,
             1 => Self::Get,
@@ -105,7 +104,7 @@ impl CoapCode {
         }
     }
 
-    fn as_u8(&self) -> u8 {
+    pub fn as_u8(&self) -> u8 {
         match self {
             Self::Empty => 0,
             Self::Get => 1,
@@ -137,18 +136,18 @@ impl CoapCode {
         }
     }
 
-    fn is_method(&self) -> bool {
+    pub fn is_method(&self) -> bool {
         matches!(self, Self::Get | Self::Post | Self::Put | Self::Delete)
     }
 
-    fn is_success(&self) -> bool {
+    pub fn is_success(&self) -> bool {
         matches!(
             self,
             Self::Created | Self::Deleted | Self::Valid | Self::Changed | Self::Content
         )
     }
 
-    fn is_client_error(&self) -> bool {
+    pub fn is_client_error(&self) -> bool {
         matches!(
             self,
             Self::BadRequest
@@ -164,7 +163,7 @@ impl CoapCode {
         )
     }
 
-    fn is_server_error(&self) -> bool {
+    pub fn is_server_error(&self) -> bool {
         matches!(
             self,
             Self::InternalServerError
@@ -532,5 +531,21 @@ mod tests {
             observe_counter: 0,
         };
         assert!(v.validate(&s).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = CoapParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

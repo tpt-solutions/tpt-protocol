@@ -80,12 +80,22 @@ cargo build --workspace
 # Test all crates
 cargo test --workspace
 
-# Run the daemon with simulated Modbus data
+# List the 19 protocols the daemon can simulate
+cargo run --bin tpt-protocol-daemon -- --list-protocols
+
+# Run the daemon with simulated data for any supported protocol
 cargo run --bin tpt-protocol-daemon -- --simulate modbus
+
+# Replay raw bytes from a file through a protocol's parser (hex or raw)
+cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 
 # In another terminal, launch the TUI
 cargo run --bin tpt-protocol-cli
 ```
+
+The daemon currently ships **simulation only** — every protocol produces
+synthetic TUP data points so the pipeline can be exercised end-to-end without
+hardware. Real transport (Serial/CAN/TCP/UDP) is future work.
 
 ## Architecture
 
