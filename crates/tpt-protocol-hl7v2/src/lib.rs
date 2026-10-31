@@ -29,17 +29,6 @@ impl Hl7MessageType {
             other => Self::Other(other.into()),
         }
     }
-
-    #[allow(dead_code)]
-    fn as_str(&self) -> &str {
-        match self {
-            Self::Adt => "ADT",
-            Self::Orm => "ORM",
-            Self::Oru => "ORU",
-            Self::Mdm => "MDM",
-            Self::Other(s) => s.as_str(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,5 +307,21 @@ mod tests {
             last_ack_received: false,
         };
         assert!(v.validate(&s).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = Hl7Parser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

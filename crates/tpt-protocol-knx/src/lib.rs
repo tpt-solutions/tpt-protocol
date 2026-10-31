@@ -14,7 +14,6 @@ pub enum KnxServiceType {
     GroupValueWrite,
 }
 
-#[allow(dead_code)]
 impl KnxServiceType {
     fn from_u8(v: u8) -> Option<Self> {
         match v {
@@ -25,7 +24,7 @@ impl KnxServiceType {
         }
     }
 
-    fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Self::GroupValueRead => "GroupValueRead",
             Self::GroupValueResponse => "GroupValueResponse",
@@ -41,7 +40,6 @@ pub struct GroupAddress {
     pub sub: u8,
 }
 
-#[allow(dead_code)]
 impl GroupAddress {
     fn from_u16(addr: u16) -> Self {
         let main = ((addr >> 11) & 0x1f) as u8;
@@ -50,7 +48,7 @@ impl GroupAddress {
         Self { main, middle, sub }
     }
 
-    fn to_u16(self) -> u16 {
+    pub fn to_u16(self) -> u16 {
         ((self.main as u16) << 11) | ((self.middle as u16) << 8) | (self.sub as u16)
     }
 }
@@ -312,5 +310,21 @@ mod tests {
             sequence_counter: 0,
         };
         assert!(v.validate(&s).is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = KnxParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

@@ -21,10 +21,10 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 ├───────────────┤   │   │   │   DataNormalizer)      │  │   │  │  (CLI)         │
 │  J1939/ISOBUS │───┼───┼──▶│   ──────────────────▶  │  │──┼──▶├────────────────┤
 │  ECU          │   │   │   │   TUP (CBOR/JSON)      │  │   │  │  Embedded UI   │
-├───────────────┤   │   │   └────────────────────────┘  │   │  │  (deferred)    │
+├───────────────┤   │   │   └────────────────────────┘  │   │  │  (Slint)       │
 │  BACnet       │───┼───┼──▶│  ┌────────────────────┐   │   │  ├────────────────┤
 │  Building     │   │   │   │  │ Local WebSocket/   │   │   │  │  Web UI        │
-├───────────────┤   │   │   │  │ REST API (127.0.0.1)│   │   │  │  (deferred)    │
+├───────────────┤   │   │   │  │ REST API (127.0.0.1)│   │   │  │  (Tauri/Svelte)│
 │  ...16 more   │───┼───┼──▶│  └────────────────────┘   │   │  └────────────────┘
 └───────────────┘   │   └──────────────────────────────┘   │
                     └──────────────────────────────────────┘
@@ -64,6 +64,9 @@ tpt-protocol/
 ├── crates/out-protocol-<name>/    # 2 private from-scratch implementations (not published)
 ├── crates/tpt-protocol-daemon/    # Background service
 ├── crates/tpt-protocol-cli/       # TUI (ratatui dashboard)
+├── crates/tpt-protocol-ui-embedded/ # Native embedded UI (Slint)
+├── crates/tpt-protocol-ui-web/    # Web fleet dashboard (Tauri v2 + SvelteKit)
+├── crates/tpt-protocol-telos/     # Formal-verification specs (tpt-telos)
 ├── SPEC-TUP.md                    # TUP schema specification
 └── Cargo.toml                     # Workspace root
 ```
@@ -77,19 +80,29 @@ cargo build --workspace
 # Test all crates
 cargo test --workspace
 
-# Run the daemon with simulated Modbus data
+# List the 19 protocols the daemon can simulate
+cargo run --bin tpt-protocol-daemon -- --list-protocols
+
+# Run the daemon with simulated data for any supported protocol
 cargo run --bin tpt-protocol-daemon -- --simulate modbus
+
+# Replay raw bytes from a file through a protocol's parser (hex or raw)
+cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 
 # In another terminal, launch the TUI
 cargo run --bin tpt-protocol-cli
 ```
+
+The daemon currently ships **simulation only** — every protocol produces
+synthetic TUP data points so the pipeline can be exercised end-to-end without
+hardware. Real transport (Serial/CAN/TCP/UDP) is future work.
 
 ## Architecture
 
 - **no_std by default**: All protocol crates compile to bare-metal targets (`thumbv6m-none-eabi`).
 - **Local-first**: The daemon binds its API to `127.0.0.1` only. Zero telemetry, zero cloud dependency.
 - **TUP envelope**: Every protocol normalizes into the TPT Unified Protocol — CBOR on the wire, JSON for the UI, openly specified in `SPEC-TUP.md`.
-- **Memory-safe**: Written in Rust. Critical state machines target formal verification.
+- **Memory-safe**: Written in Rust. Critical state machines are formally verified with [`tpt-telos`](https://crates.io/crates/tpt-telos) (`tpt-protocol-telos`).
 
 ## License
 

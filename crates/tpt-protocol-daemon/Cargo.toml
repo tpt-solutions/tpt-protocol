@@ -18,11 +18,31 @@ path = "src/main.rs"
 [dependencies]
 tpt-protocol-core = { workspace = true }
 tpt-protocol-tup = { workspace = true }
+tpt-protocol-modbus = { path = "../tpt-protocol-modbus" }
+tpt-protocol-j1939 = { path = "../tpt-protocol-j1939" }
+tpt-protocol-isobus = { path = "../tpt-protocol-isobus" }
+tpt-protocol-uds = { path = "../tpt-protocol-uds" }
+tpt-protocol-canopen = { path = "../tpt-protocol-canopen" }
+tpt-protocol-doip-someip = { path = "../tpt-protocol-doip-someip" }
+tpt-protocol-nmea = { path = "../tpt-protocol-nmea" }
+tpt-protocol-mavlink = { path = "../tpt-protocol-mavlink" }
+tpt-protocol-bacnet = { path = "../tpt-protocol-bacnet" }
+tpt-protocol-opcua = { path = "../tpt-protocol-opcua" }
+tpt-protocol-dnp3 = { path = "../tpt-protocol-dnp3" }
+tpt-protocol-ethercat = { path = "../tpt-protocol-ethercat" }
+tpt-protocol-sparkplugb = { path = "../tpt-protocol-sparkplugb" }
+tpt-protocol-ocpp = { path = "../tpt-protocol-ocpp" }
+tpt-protocol-ieee11073-sdc = { path = "../tpt-protocol-ieee11073-sdc" }
+tpt-protocol-hl7v2 = { path = "../tpt-protocol-hl7v2" }
+tpt-protocol-knx = { path = "../tpt-protocol-knx" }
+tpt-protocol-matter-thread = { path = "../tpt-protocol-matter-thread" }
+tpt-protocol-coap = { path = "../tpt-protocol-coap" }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = "0.24"
 futures-util = "0.3"
 anyhow = "1"
 toml = "0.8"
+hex = { workspace = true }

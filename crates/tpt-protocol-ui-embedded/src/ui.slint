@@ -1,0 +1,51 @@
+// TPT Protocol — live data dashboard (embedded / native).
+// High-contrast table of TUP data points streamed from the daemon.
+export struct DataRow {
+    time: string,
+    protocol: string,
+    device: string,
+    point: string,
+    value: string,
+    quality: string,
+}
+
+import { ScrollView, ListView } from "std-widgets.slint";
+
+export component MainWindow inherits Window {
+    in-out property <[DataRow]> rows: [];
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        Text {
+            text: "TPT Protocol — Live Telemetry";
+            font-size: 22px;
+            color: #ffffff;
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            Rectangle { background: #21262d; width: 110px; Text { text: "Time"; color: #ffffff; } }
+            Rectangle { background: #21262d; width: 110px; Text { text: "Protocol"; color: #ffffff; } }
+            Rectangle { background: #21262d; width: 160px; Text { text: "Device"; color: #ffffff; } }
+            Rectangle { background: #21262d; width: 160px; Text { text: "Point"; color: #ffffff; } }
+            Rectangle { background: #21262d; width: 120px; Text { text: "Value"; color: #ffffff; } }
+            Rectangle { background: #21262d; width: 100px; Text { text: "Quality"; color: #ffffff; } }
+        }
+
+        ListView {
+            for row in root.rows : HorizontalLayout {
+                spacing: 4px;
+                Rectangle { width: 110px; Text { text: row.time; color: #e6edf3; } }
+                Rectangle { width: 110px; Text { text: row.protocol; color: #e6edf3; } }
+                Rectangle { width: 160px; Text { text: row.device; color: #e6edf3; } }
+                Rectangle { width: 160px; Text { text: row.point; color: #e6edf3; } }
+                Rectangle { width: 120px; Text { text: row.value; color: #e6edf3; } }
+                Rectangle { width: 100px; Text { text: row.quality; color: #e6edf3; } }
+            }
+        }
+    }
+
+    background: #101418;
+}

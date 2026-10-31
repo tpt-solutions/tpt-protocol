@@ -1,0 +1,21 @@
+// CRC-16/Modbus framing window bounds.
+//
+// The parser computes the CRC over bytes[0..len-2] and reads the expected CRC
+// from bytes[len-2..len]. For this to be memory-safe we require len >= 4 and
+// prove the CRC window start is in bounds. The window start is a field of the
+// Frame that the parse step computes.
+
+module ModbusCrc {
+    struct Frame {
+        len: Int,
+        crc_start: Int,
+    }
+
+    invariant WindowInBounds { crc_start >= 2 && crc_start < len }
+
+    func parse(f: Frame, len: Int)
+        requires len >= 4
+        ensures f.len == len
+        ensures f.crc_start == len - 2
+    { mutate state { f.len = len; f.crc_start = len - 2 } }
+}

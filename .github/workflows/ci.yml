@@ -44,3 +44,11 @@ jobs:
         with:
           targets: thumbv6m-none-eabi
       - run: cargo build --workspace --target thumbv6m-none-eabi
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check

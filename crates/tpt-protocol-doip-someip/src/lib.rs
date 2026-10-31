@@ -222,11 +222,10 @@ impl DoipSomeipParser {
         let payload_type = DoipPayloadType::from_u16(u16::from_be_bytes([bytes[2], bytes[3]]));
         let payload_length = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
 
-        let payload_end = 8 + payload_length as usize;
-        let payload = if bytes.len() >= payload_end {
-            bytes[8..payload_end].to_vec()
-        } else {
-            Vec::new()
+        let payload_end = 8usize.checked_add(payload_length as usize);
+        let payload = match payload_end {
+            Some(end) if bytes.len() >= end => bytes[8..end].to_vec(),
+            _ => Vec::new(),
         };
 
         Ok(DoipSomeipFrame::Doip(DoipFrame {
@@ -506,5 +505,35 @@ mod tests {
             error_count: 0,
         };
         assert!(validator.validate(&state).is_err());
+    }
+
+    #[test]
+    fn doip_huge_payload_length_no_overflow() {
+        // payload_length = u32::MAX would make `8 + len` overflow on 32-bit
+        // targets and produce an inverted slice range on 64-bit.
+        let mut bytes = vec![0x02, 0xFD, 0x00, 0x07];
+        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        let parser = DoipSomeipParser::new();
+        let frame = parser.parse(&bytes).unwrap();
+        match frame {
+            DoipSomeipFrame::Doip(d) => assert!(d.payload.is_empty()),
+            _ => panic!("expected DoIP frame"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = DoipSomeipParser::new();
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

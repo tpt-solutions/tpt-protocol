@@ -37,6 +37,13 @@ The wire/embedded canonical form is [CBOR](https://www.rfc-editor.org/rfc/rfc894
 (RFC 8949), defined here in [CDDL](https://www.rfc-editor.org/rfc/rfc8610)
 (RFC 8610):
 
+The normative schema is published as standalone files at the repository root:
+
+- **`schema/tup-v1.cddl`** — CDDL for the CBOR canonical encoding (authoritative).
+- **`schema/tup-v1.schema.json`** — JSON Schema (draft-07) for the JSON mirror
+  encoding. A test in `tpt-protocol-tup` validates the worked example below
+  against this schema.
+
 ```cddl
 ; TPT Unified Protocol (TUP) v1 — CDDL schema for the CBOR encoding
 

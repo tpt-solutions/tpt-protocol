@@ -10,6 +10,9 @@ use alloc::vec::Vec;
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
+/// Upper bound on pre-allocated metrics from a wire-controlled count field.
+const MAX_SPARKPLUG_METRICS: usize = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SparkplugMessageType {
     NBIRTH,
@@ -89,7 +92,7 @@ impl FrameParser for SparkplugParser {
         ]);
         let metric_count = u16::from_be_bytes([bytes[12], bytes[13]]);
         let mut offset = 14usize;
-        let mut metrics = Vec::with_capacity(metric_count as usize);
+        let mut metrics = Vec::with_capacity((metric_count as usize).min(MAX_SPARKPLUG_METRICS));
 
         for _ in 0..metric_count {
             if offset >= bytes.len() {
@@ -273,6 +276,7 @@ impl DataNormalizer for SparkplugNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use tpt_protocol_core::FrameParser;
 
     fn make_valid_frame_bytes() -> Vec<u8> {
@@ -366,5 +370,35 @@ mod tests {
             birth_received: false,
         };
         assert!(validator.validate(&state).is_err());
+    }
+
+    #[test]
+    fn huge_metric_count_no_unbounded_alloc() {
+        // 14-byte header with a 0xFFFF metric count; must Err without allocating
+        // 65k Metric structs.
+        let parser = SparkplugParser;
+        let mut bytes = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF];
+        let result = parser.parse(&bytes);
+        assert!(result.is_err());
+        // Also when the count is non-zero but data is missing.
+        bytes[12] = 0x00;
+        let result = parser.parse(&bytes);
+        assert!(result.is_err());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
+            let parser = SparkplugParser;
+            // The parser must never panic on arbitrary input; it returns an
+            // Err for malformed frames instead.
+            let _ = parser.parse(&bytes);
+        }
     }
 }

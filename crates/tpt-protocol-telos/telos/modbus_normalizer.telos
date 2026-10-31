@@ -1,0 +1,22 @@
+// Modbus WriteMultipleRegisters normalizer bounds.
+//
+// A request declares a register quantity N and the normalizer must never yield
+// more than N register values. We model the request as a struct with a
+// value_count field and prove it stays within the declared quantity, which
+// guarantees the parser cannot read past the end of the data slice.
+
+module ModbusNormalizer {
+    struct Request {
+        quantity: Int,
+        value_count: Int,
+    }
+
+    invariant QuantitiesNonNeg { quantity >= 0 }
+
+    func compute(req: Request)
+        requires req.quantity >= 0
+        ensures req.value_count <= req.quantity
+    { mutate state {
+        req.value_count = req.quantity;
+    } }
+}

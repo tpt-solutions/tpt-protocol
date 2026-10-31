@@ -1,0 +1,23 @@
+; TPT Unified Protocol (TUP) v1 — CDDL schema for the CBOR canonical encoding.
+; See SPEC-TUP.md for the human-readable description and JSON mirror.
+
+tup-message = {
+  schema_version: uint .default 1,
+  source_protocol: source-protocol,
+  device_id: tstr,
+  point_id: tstr,
+  timestamp: uint,          ; unix epoch, milliseconds
+  value: tup-value,
+  ? unit: tstr,
+  quality: quality,
+  ? raw: bstr,
+}
+
+source-protocol = "modbus" / "j1939" / "isobus" / "uds" / "canopen" /
+                   "doip-someip" / "nmea" / "mavlink" / "bacnet" / "opcua" /
+                   "dnp3" / "ethercat" / "sparkplugb" / "ocpp" /
+                   "ieee11073-sdc" / "hl7v2" / "knx" / "matter-thread" / "coap"
+
+tup-value = int / float / bool / tstr / bstr
+
+quality = "good" / "bad" / "stale" / "uncertain"

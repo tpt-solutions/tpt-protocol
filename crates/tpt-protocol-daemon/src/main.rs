@@ -1,5 +1,6 @@
+mod plugins;
+
 use std::pin::Pin;
-use std::time::Duration;
 
 use anyhow::Result;
 use clap::Parser;
@@ -11,58 +12,12 @@ use tokio::sync::broadcast;
 use tokio_tungstenite::accept_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use tpt_protocol_core::ProtocolPlugin;
-use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
-
-struct ModbusPlugin;
-
-impl ProtocolPlugin for ModbusPlugin {
-    fn simulate(self: Box<Self>) -> Pin<Box<dyn Stream<Item = DataPoint> + Send>> {
-        Box::pin(futures_util::stream::unfold(0u64, |tick| async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
-            let dp = match tick % 3 {
-                0 => DataPoint::new(
-                    SourceProtocol::Modbus,
-                    "modbus-sim-01",
-                    "holding-register:40001",
-                    ts,
-                    TupValue::Float(70.0 + ((tick as f64 * 0.2).sin() * 10.0)),
-                    Quality::Good,
-                )
-                .with_unit("degF"),
-                1 => DataPoint::new(
-                    SourceProtocol::Modbus,
-                    "modbus-sim-01",
-                    "holding-register:40002",
-                    ts,
-                    TupValue::Float(100.0 + (tick as f64 % 100.0)),
-                    Quality::Good,
-                )
-                .with_unit("kPa"),
-                _ => DataPoint::new(
-                    SourceProtocol::Modbus,
-                    "modbus-sim-01",
-                    "coil:00001",
-                    ts,
-                    TupValue::Bool(tick % 2 == 0),
-                    Quality::Good,
-                ),
-            };
-
-            Some((dp, tick + 1))
-        }))
-    }
-}
+use tpt_protocol_tup::{DataPoint, TupValue};
 
 #[derive(Parser)]
 #[command(name = "tpt-protocol-daemon", version = "0.1.0")]
 struct Args {
+    /// Simulate this protocol instead of a real device. See `--list-protocols`.
     #[arg(long)]
     simulate: Option<String>,
     #[arg(long)]
@@ -71,6 +26,14 @@ struct Args {
     port: u16,
     #[arg(long, default_value = "127.0.0.1")]
     bind: String,
+    /// Print the list of supported protocols and exit.
+    #[arg(long)]
+    list_protocols: bool,
+    /// Replay raw bytes from a file through the chosen protocol's parser instead
+    /// of running the synthetic simulation. Hex strings are decoded; otherwise
+    /// the file is read as raw bytes.
+    #[arg(long)]
+    replay: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -166,9 +129,32 @@ async fn ws_server(bind: &str, port: u16, tx: broadcast::Sender<DataPoint>) -> R
     Ok(())
 }
 
+/// Returns true if `bind` resolves to a loopback address. We warn (rather than
+/// refuse) when the daemon is asked to bind to a non-loopback address, since
+/// the WebSocket API currently has no authentication.
+fn is_loopback_bind(bind: &str) -> bool {
+    if bind == "localhost" || bind == "::1" || bind == "0:0:0:0:0:0:0:1" {
+        return true;
+    }
+    // Strip a bracketed IPv6 literal like [::1].
+    let candidate = bind.trim_matches(|c| c == '[' || c == ']');
+    if let Ok(ip) = candidate.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    false
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    if args.list_protocols {
+        println!("Supported protocols:");
+        for name in plugins::list_protocols() {
+            println!("  {name}");
+        }
+        return Ok(());
+    }
 
     let (simulate, port, bind) = if let Some(ref config_path) = args.config {
         let config_str = tokio::fs::read_to_string(config_path).await?;
@@ -180,25 +166,48 @@ async fn main() -> Result<()> {
 
     let protocol = simulate.as_deref().unwrap_or("modbus");
 
+    if let Some(ref replay_path) = args.replay {
+        let raw = tokio::fs::read_to_string(replay_path).await?;
+        let bytes = if let Some(hex_str) = raw
+            .trim()
+            .strip_prefix("0x")
+            .or_else(|| raw.trim().strip_prefix("0X"))
+        {
+            hex::decode(hex_str.trim())
+                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
+        } else if raw.trim().chars().all(|c| c.is_ascii_hexdigit()) && raw.trim().len() % 2 == 0 {
+            hex::decode(raw.trim())
+                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
+        } else {
+            tokio::fs::read(replay_path).await?
+        };
+        let dp = plugins::replay_one(protocol, &bytes)
+            .map_err(|e| anyhow::anyhow!("replay parse failed: {e}"))?;
+        println!("{}", datapoint_to_json(&dp)?);
+        return Ok(());
+    }
+
     println!("TPT Protocol Daemon v0.1.0");
     println!("Simulating: {protocol}");
 
+    if !is_loopback_bind(&bind) {
+        eprintln!(
+            "WARNING: binding to non-loopback address '{bind}'. The daemon's WebSocket \
+             API has no authentication; expose it only on a trusted network."
+        );
+    }
+
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
 
-    match protocol {
-        "modbus" => {
-            let plugin = ModbusPlugin;
-            let stream = Box::new(plugin).simulate();
-            let tx = tx.clone();
-            tokio::spawn(async move {
-                let mut stream = stream;
-                while let Some(dp) = stream.next().await {
-                    let _ = tx.send(dp);
-                }
-            });
+    let plugin = plugins::build_plugin(protocol).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
+    let sim_tx = tx.clone();
+    tokio::spawn(async move {
+        let mut stream = stream;
+        while let Some(dp) = stream.next().await {
+            let _ = sim_tx.send(dp);
         }
-        other => anyhow::bail!("unknown protocol: {other}"),
-    }
+    });
 
     let ws_tx = tx.clone();
     let bind_clone = bind.clone();
@@ -214,4 +223,22 @@ async fn main() -> Result<()> {
     println!("\nShutting down...");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_protocols_buildable() {
+        // There are 19 protocol crates wired into the daemon.
+        assert_eq!(plugins::list_protocols().len(), 19);
+        for name in plugins::list_protocols() {
+            assert!(
+                plugins::build_plugin(name).is_ok(),
+                "failed to build {name}"
+            );
+        }
+        assert!(plugins::build_plugin("not-a-protocol").is_err());
+    }
 }

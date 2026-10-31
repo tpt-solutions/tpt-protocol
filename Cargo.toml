@@ -24,6 +24,9 @@ members = [
     "crates/tpt-protocol-coap",
     "crates/tpt-protocol-daemon",
     "crates/tpt-protocol-cli",
+    "crates/tpt-protocol-telos",
+    "crates/tpt-protocol-ui-embedded",
+    "crates/tpt-protocol-ui-web",
 ]
 exclude = []
 
@@ -45,9 +48,13 @@ serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+tpt-telos-parser = { version = "0.1.1" }
+tpt-telos-ir = { version = "0.1.1" }
+tpt-telos-verifier = { version = "0.1.1" }
 
 [profile.release]
 opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+overflow-checks = true
