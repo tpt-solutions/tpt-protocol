@@ -43,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv6m-none-eabi
-      - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --target thumbv6m-none-eabi
+      - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --exclude tpt-protocol-telos --target thumbv6m-none-eabi
 
   cargo-deny:
     runs-on: ubuntu-latest
