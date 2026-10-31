@@ -79,6 +79,8 @@ impl DataPoint {
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod json;
 
+#[cfg(feature = "alloc")]
+#[cfg_attr(docsrs, doc(cfg(feature = "alloc")))]
 pub mod cbor;
 
 #[cfg(test)]

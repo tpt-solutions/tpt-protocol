@@ -16,7 +16,7 @@ name = "tpt-protocol-cli"
 path = "src/main.rs"
 
 [dependencies]
-tpt-protocol-tup = { workspace = true }
+tpt-protocol-tup = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.24", features = ["native-tls"] }

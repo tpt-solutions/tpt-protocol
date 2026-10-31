@@ -16,8 +16,8 @@ name = "tpt-protocol-daemon"
 path = "src/main.rs"
 
 [dependencies]
-tpt-protocol-core = { workspace = true }
-tpt-protocol-tup = { workspace = true }
+tpt-protocol-core = { workspace = true, features = ["std"] }
+tpt-protocol-tup = { workspace = true, features = ["std"] }
 tpt-protocol-modbus = { path = "../tpt-protocol-modbus" }
 tpt-protocol-j1939 = { path = "../tpt-protocol-j1939" }
 tpt-protocol-isobus = { path = "../tpt-protocol-isobus" }

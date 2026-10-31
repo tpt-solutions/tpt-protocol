@@ -12,13 +12,13 @@ homepage.workspace = true
 repository.workspace = true
 
 [features]
-default = ["std"]
-std = ["dep:serde_json", "minicbor/std"]
+default = []
+std = ["alloc", "dep:serde", "dep:serde_json", "minicbor/std"]
 alloc = ["minicbor/alloc"]
 
 [dependencies]
 minicbor = { workspace = true }
-serde = { workspace = true }
+serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true, features = ["std"] }
 hex = { workspace = true }
 
@@ -27,4 +27,5 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
+tpt-protocol-tup = { path = ".", features = ["std"] }
 jsonschema = "0.17"
