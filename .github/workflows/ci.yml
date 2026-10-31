@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,14 +27,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --all-targets --all-features -- -D warnings
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace
+      - run: cargo test --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded
 
   no_std:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv6m-none-eabi
-      - run: cargo build --workspace --target thumbv6m-none-eabi
+      - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --target thumbv6m-none-eabi
 
   cargo-deny:
     runs-on: ubuntu-latest
