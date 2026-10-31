@@ -1,10 +1,9 @@
 [package]
-name = "out-protocol-ethercat"
+name = "tpt-protocol-mavlink"
 version = "0.1.0"
-description = "Private from-scratch EtherCAT implementation (not published; alternative to ethercrab crate)"
-publish = false
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+description = "MAVLink protocol crate that wraps the mavlink crate for frame decoding"
+keywords = ["tpt","mavlink","drone","uav","telemetry"]
+categories = ["aerospace","network-programming"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,6 +14,7 @@ repository.workspace = true
 [dependencies]
 tpt-protocol-core = { workspace = true }
 tpt-protocol-tup = { workspace = true }
+mavlink = { workspace = true }
 
 [package.metadata.docs.rs]
 all-features = true

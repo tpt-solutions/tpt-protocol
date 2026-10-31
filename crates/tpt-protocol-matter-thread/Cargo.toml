@@ -2,8 +2,8 @@
 name = "tpt-protocol-matter-thread"
 version = "0.1.0"
 description = "Matter/Thread implementation, MIT OR Apache-2.0 (rs-matter is Apache-2.0 only)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","matter","thread","iot","smart-home"]
+categories = ["network-programming","embedded"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

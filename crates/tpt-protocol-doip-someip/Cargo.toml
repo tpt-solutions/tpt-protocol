@@ -2,8 +2,8 @@
 name = "tpt-protocol-doip-someip"
 version = "0.1.0"
 description = "DoIP / SOME/IP automotive Ethernet protocol parser"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","doip","someip","automotive","ethernet"]
+categories = ["network-programming","encoding","parser-implementations"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

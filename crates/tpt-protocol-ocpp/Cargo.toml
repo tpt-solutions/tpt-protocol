@@ -2,8 +2,8 @@
 name = "tpt-protocol-ocpp"
 version = "0.1.0"
 description = "OCPP 2.0.1 implementation, no_std (the ocpp crate is unmaintained since 2019)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","ocpp","ev-charging","ocpp2","iot"]
+categories = ["network-programming","encoding"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,10 +1,9 @@
 [package]
-name = "out-protocol-mavlink"
+name = "tpt-protocol-ethercat"
 version = "0.1.0"
-description = "Private from-scratch MAVLink implementation (not published; alternative to mavlink crate)"
-publish = false
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+description = "From-scratch EtherCAT implementation (alternative to the ethercrab crate)"
+keywords = ["tpt","ethercat","fieldbus","automation","industrial"]
+categories = ["embedded","network-programming","hardware-support"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

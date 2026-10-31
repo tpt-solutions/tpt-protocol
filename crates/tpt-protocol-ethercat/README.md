@@ -1,4 +1,4 @@
-# out-protocol-ethercat
+# tpt-protocol-ethercat
 
 EtherCAT high-performance factory automation protocol parser for the TPT telemetry pipeline.
 

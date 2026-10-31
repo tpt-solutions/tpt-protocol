@@ -10,11 +10,11 @@ members = [
     "crates/tpt-protocol-canopen",
     "crates/tpt-protocol-doip-someip",
     "crates/tpt-protocol-nmea",
-    "crates/out-protocol-mavlink",
+    "crates/tpt-protocol-mavlink",
     "crates/tpt-protocol-bacnet",
     "crates/tpt-protocol-opcua",
     "crates/tpt-protocol-dnp3",
-    "crates/out-protocol-ethercat",
+    "crates/tpt-protocol-ethercat",
     "crates/tpt-protocol-sparkplugb",
     "crates/tpt-protocol-ocpp",
     "crates/tpt-protocol-ieee11073-sdc",
@@ -39,6 +39,7 @@ repository = "https://github.com/tpt-protocol/tpt-protocol"
 [workspace.dependencies]
 tpt-protocol-tup = { version = "0.1.0", path = "crates/tpt-protocol-tup" }
 tpt-protocol-core = { version = "0.1.0", path = "crates/tpt-protocol-core" }
+mavlink = { version = "0.15", default-features = false, features = ["embedded", "common"] }
 minicbor = { version = "0.24", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }

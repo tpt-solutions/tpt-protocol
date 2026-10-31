@@ -2,8 +2,8 @@
 name = "tpt-protocol-ieee11073-sdc"
 version = "0.1.0"
 description = "IEEE 11073 SDC bedside medical device protocol parser"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","ieee11073","medical-devices","sdc","healthcare"]
+categories = ["encoding","parser-implementations","network-programming"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

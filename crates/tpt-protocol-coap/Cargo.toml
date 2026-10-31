@@ -2,8 +2,8 @@
 name = "tpt-protocol-coap"
 version = "0.1.0"
 description = "CoAP (RFC 7252) implementation, no_std (coap-rs requires std + tokio)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","coap","iot","rfc7252","embedded"]
+categories = ["network-programming","embedded"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

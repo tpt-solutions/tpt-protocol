@@ -2,8 +2,8 @@
 name = "tpt-protocol-sparkplugb"
 version = "0.1.0"
 description = "Sparkplug B MQTT-based IIoT protocol parser"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","sparkplug","mqtt","iiot","industrial"]
+categories = ["network-programming","encoding"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

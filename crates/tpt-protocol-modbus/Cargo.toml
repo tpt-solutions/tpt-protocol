@@ -2,8 +2,8 @@
 name = "tpt-protocol-modbus"
 version = "0.1.0"
 description = "Modbus RTU/TCP implementation, no_std (tokio-modbus requires std + tokio)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","modbus","rtu","tcp","industrial"]
+categories = ["embedded","network-programming","hardware-support"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -56,7 +56,8 @@ CI (`.github/workflows/ci.yml`) runs four independent jobs: `fmt`, `clippy`, `te
 
 **`tpt-protocol-*` vs `out-protocol-*` naming**: both are from-scratch reimplementations (never wrappers around the crates.io crate they're compared to) with identical dependency shape (`tpt-protocol-core` + `tpt-protocol-tup` only). The difference is just the `publish` flag in `Cargo.toml` / whether the crate is in the "published" set:
 - `tpt-protocol-<name>` → `publish` unset (published) — used when there's a concrete reason ours is better: a no_std gap in the existing crates.io crate (e.g. `tokio-modbus`, `coap-rs`, and `canopen` are std/tokio- or Linux-socketcan-only), a license gap (e.g. `nmea` and `rs-matter` are Apache-2.0-only, ours is dual `MIT OR Apache-2.0`), the existing crate is unmaintained (`ocpp`, abandoned since 2019), or no crate exists at all (`uds`/ISO 14229).
-- `out-protocol-<name>` → `publish = false` — used when the existing crates.io crate already covers both no_std and dual licensing (currently just `ethercat`→`ethercrab` and `mavlink`→`mavlink`), so publishing ours would be pure duplication.
+- `out-protocol-<name>` → `publish = false` — used when the existing crates.io crate already covers both no_std and dual licensing (currently none).
+- Exception: `tpt-protocol-ethercat` (`ethercat`→`ethercrab`) and `tpt-protocol-mavlink` (`mavlink`→`mavlink`) use the `tpt-` name and are published (publish unset). `tpt-protocol-mavlink` wraps the `mavlink` crate for decoding; `tpt-protocol-ethercat` is still a from-scratch parser.
 `publish = false` only affects crates.io distribution — private crates are full workspace members, implement the same traits, and are wired into the daemon identically to published ones. See the reasoning table in `TODO.md` (Phase 3/4) before changing publish status on any crate.
 
 **Design invariants** (from `spec.txt` / root `README.md`):

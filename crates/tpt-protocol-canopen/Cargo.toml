@@ -2,8 +2,8 @@
 name = "tpt-protocol-canopen"
 version = "0.1.0"
 description = "CANopen implementation, no_std (canopen crate requires std + Linux socketcan)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","canopen","can-bus","fieldbus","embedded"]
+categories = ["embedded","network-programming","hardware-support"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -2,8 +2,8 @@
 name = "tpt-protocol-uds"
 version = "0.1.0"
 description = "ISO 14229 (UDS) diagnostic services implementation (no existing crate for this protocol)"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","uds","iso14229","automotive","diagnostics"]
+categories = ["network-programming","encoding","parser-implementations"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -2,8 +2,8 @@
 name = "tpt-protocol-tup"
 version = "0.1.0"
 description = "TPT Unified Protocol — canonical normalized schema with CBOR binary encoding and JSON mirror"
-keywords = ["tpt", "protocol", "tup", "cbor", "industrial"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","tup","cbor","schema","telemetry"]
+categories = ["encoding","embedded"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

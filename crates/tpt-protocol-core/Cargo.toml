@@ -2,8 +2,8 @@
 name = "tpt-protocol-core"
 version = "0.1.0"
 description = "Core traits for TPT Protocol: FrameParser, StateValidator, DataNormalizer"
-keywords = ["tpt", "protocol", "traits", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","protocol","traits","parser","normalizer"]
+categories = ["encoding","parser-implementations","embedded"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

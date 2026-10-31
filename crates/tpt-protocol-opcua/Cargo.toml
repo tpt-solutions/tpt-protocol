@@ -2,8 +2,8 @@
 name = "tpt-protocol-opcua"
 version = "0.1.0"
 description = "OPC UA Industry 4.0 protocol parser"
-keywords = ["tpt", "protocol", "industrial", "embedded"]
-categories = ["encoding", "network-programming", "embedded"]
+keywords = ["tpt","opcua","industry-4-0","scada","industrial"]
+categories = ["network-programming","encoding"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -2,8 +2,8 @@
 name = "tpt-protocol-daemon"
 version = "0.1.0"
 description = "TPT Protocol background service — transports, protocol plugins, and local API"
-keywords = ["tpt", "protocol", "daemon", "industrial"]
-categories = ["network-programming"]
+keywords = ["tpt","daemon","websocket","transport","industrial"]
+categories = ["command-line-utilities","network-programming"]
 authors.workspace = true
 edition.workspace = true
 rust-version.workspace = true

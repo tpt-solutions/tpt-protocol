@@ -2,7 +2,7 @@
 name = "tpt-protocol-cli"
 version = "0.1.0"
 description = "TPT Protocol terminal UI — ratatui dashboard for live protocol data"
-keywords = ["tpt", "protocol", "tui", "ratatui", "dashboard"]
+keywords = ["tpt","tui","ratatui","dashboard","terminal"]
 categories = ["command-line-utilities"]
 authors.workspace = true
 edition.workspace = true

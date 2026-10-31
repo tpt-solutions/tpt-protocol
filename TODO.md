@@ -27,8 +27,8 @@ private, where the existing crate genuinely has no gap:
 | `nmea` | `nmea` | no_std-capable but Apache-2.0 only | published (license gap) |
 | `matter-thread` | `rs-matter` | no_std, no-alloc, but Apache-2.0 only | published (license gap) |
 | `uds` | *(no real ISO-14229 crate exists on crates.io)* | n/a | published (fills total absence) |
-| `ethercat` | `ethercrab` | std **and** no_std, `MIT OR Apache-2.0` | private (no gap) |
-| `mavlink` | `mavlink` | std + embedded feature, `MIT/Apache-2.0` | private (no gap) |
+| `ethercat` | `ethercrab` | std **and** no_std, `MIT OR Apache-2.0` | published as `tpt-protocol-ethercat` (no gap; from-scratch) |
+| `mavlink` | `mavlink` | std + embedded feature, `MIT/Apache-2.0` | published as `tpt-protocol-mavlink` (wraps `mavlink` for decoding) |
 
 `out-protocol-*` crates are all `#![no_std]` (using `alloc` for heap
 collections, not full std) and depend only on in-workspace `tpt-protocol-core`
@@ -38,8 +38,8 @@ concern regardless of publish status. "Private" (`publish = false`) only
 affects crates.io distribution; private crates are still full workspace
 members with complete TUP normalization, used identically by the daemon.
 
-17 protocol crates + `tup` + `core` = **19 published crates**. `ethercat`
-and `mavlink` stay `out-protocol-*` (private).
+17 protocol crates + `tup` + `core` + `ethercat` + `mavlink` = **21 published crates**. (`ethercat` and `mavlink`
+were `out-protocol-*` and are now `tpt-protocol-*` with publish unset.)
 
 Deferred regardless of protocol progress (see **Later / Deferred** at the
 bottom): the embedded UI, the web UI, and formal verification (`tpt-telos`).
@@ -83,18 +83,16 @@ published `tpt-protocol-*` after the no_std/license audit (see NOTE above),
 - [x] `tpt-protocol-uds` (ISO 14229) — 9 tests — published (no existing crate)
 - [x] `tpt-protocol-canopen` — 9 tests — published (no_std gap)
 - [x] `tpt-protocol-nmea` (NMEA 2000/0183) — 11 tests — published (license gap)
-- [x] `out-protocol-mavlink` — 10 tests — private (no gap)
+- [x] `tpt-protocol-mavlink` — 10 tests — published (wraps `mavlink`)
 - [x] `tpt-protocol-modbus` (RTU/TCP) — 22 tests — published (no_std gap) — **reference implementation**
-- [x] `out-protocol-ethercat` — 9 tests — private (no gap)
+- [x] `tpt-protocol-ethercat` — 9 tests — published (from-scratch; alt. to `ethercrab`)
 - [x] `tpt-protocol-ocpp` (OCPP 2.0.1) — 8 tests — published (no maintained alternative)
 - [x] `tpt-protocol-matter-thread` — 9 tests — published (license gap)
 - [x] `tpt-protocol-coap` — 9 tests — published (no_std gap)
 
 ## Phase 4 — crates.io Publish Readiness
-Scope: the 19 published crates (`tpt-protocol-tup` + `tpt-protocol-core` +
-17 `tpt-protocol-<name>` protocol crates). `out-protocol-ethercat` and
-`out-protocol-mavlink` stay `publish = false` and are excluded from every
-step below (no crates.io gap vs. `ethercrab`/`mavlink` — see NOTE above).
+Scope: the 21 published crates (`tpt-protocol-tup` + `tpt-protocol-core` +
+17 `tpt-protocol-<name>` protocol crates + `tpt-protocol-ethercat` + `tpt-protocol-mavlink`).
 - [x] Confirm all 19 crate names unclaimed on crates.io (all free, including the 7 promoted from `out-protocol-*`)
 - [x] `cargo package --list` review per crate — all clean, no stray files
 - [x] `tpt-protocol-tup` packages cleanly (31.3 KiB, 11 files — the only crate with no internal deps)
