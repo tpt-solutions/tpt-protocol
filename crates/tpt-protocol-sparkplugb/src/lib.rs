@@ -487,6 +487,16 @@ impl SparkplugNormalizer {
 impl DataNormalizer for SparkplugNormalizer {
     type Frame = SparkplugFrame;
 
+    /// Every metric with a value. A payload with none (such as a death
+    /// certificate) yields the sequence point, as `normalize` does.
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        let points = self.points(frame);
+        if points.is_empty() {
+            return Ok(alloc::vec![self.normalize(frame)?]);
+        }
+        Ok(points)
+    }
+
     /// The first metric with a value. A payload with no such metric (for
     /// example a death certificate) yields a point for its sequence number.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
@@ -695,6 +705,14 @@ mod tests {
         assert_eq!(points[0].point_id, "Temp");
         assert_eq!(points[0].timestamp, 1_700_000_000_000);
         assert_eq!(points[1].point_id, "Pressure");
+    }
+
+    #[test]
+    fn normalize_batch_fans_out_every_metric() {
+        let bytes = payload(&[double_metric("A", 1.0), double_metric("B", 2.0)], 1);
+        let frame = decode("spBv1.0/G/NDATA/E", &bytes).unwrap();
+        let points = SparkplugNormalizer.normalize_batch(&[frame]).unwrap();
+        assert_eq!(points.len(), 2);
     }
 
     #[test]

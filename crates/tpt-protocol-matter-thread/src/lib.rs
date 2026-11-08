@@ -506,6 +506,11 @@ impl MatterNormalizer {
 impl DataNormalizer for MatterNormalizer {
     type Frame = MatterFrame;
 
+    /// Every scalar attribute of the message. Encrypted messages are an error.
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        self.points(frame)
+    }
+
     /// The first scalar attribute of the message.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
         self.points(frame)?
@@ -763,6 +768,24 @@ mod tests {
         let dp = MatterNormalizer.normalize(&frame).unwrap();
         assert_eq!(dp.point_id, "0xFC01/0x0002");
         assert_eq!(dp.device_id, "matter:unknown/ep1");
+    }
+
+    #[test]
+    fn normalize_batch_yields_the_scalar_points_of_each_frame() {
+        let payload = report_data(1, 0x0006, 0x0000, |out| put_bool(out, Some(2), true));
+        let frame = MatterParser
+            .parse(&unsecured_message(
+                None,
+                PROTOCOL_INTERACTION_MODEL,
+                OPCODE_REPORT_DATA,
+                &payload,
+            ))
+            .unwrap();
+        // Two frames, one scalar attribute each.
+        let points = MatterNormalizer
+            .normalize_batch(&[frame.clone(), frame])
+            .unwrap();
+        assert_eq!(points.len(), 2);
     }
 
     #[test]

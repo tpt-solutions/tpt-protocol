@@ -440,6 +440,15 @@ impl NmeaNormalizer {
 impl DataNormalizer for NmeaNormalizer {
     type Frame = NmeaFrame;
 
+    /// Every decoded field of the sentence, or the sentence point when none decode.
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        let points = self.points(frame);
+        if points.is_empty() {
+            return Ok(alloc::vec![self.normalize(frame)?]);
+        }
+        Ok(points)
+    }
+
     /// The first point of the sentence. A sentence with no decodable field
     /// yields a point for the sentence itself, with value 0.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
@@ -761,6 +770,39 @@ mod tests {
         let frame = NmeaParser::new().parse(&bytes).unwrap();
         let dp = NmeaNormalizer::new().normalize(&frame).unwrap();
         assert_eq!(dp.point_id, "ZDA.field0");
+    }
+
+    #[test]
+    fn normalize_batch_fans_out_gga_fields() {
+        let bytes = make_nmea(
+            "GP",
+            "GGA",
+            &[
+                "123519",
+                "4807.038",
+                "N",
+                "01131.000",
+                "E",
+                "1",
+                "08",
+                "0.9",
+                "545.4",
+                "M",
+                "46.9",
+                "M",
+                "",
+                "",
+            ],
+        );
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        // latitude, longitude, fix quality, satellites and altitude.
+        assert_eq!(
+            NmeaNormalizer::new()
+                .normalize_batch(&[frame])
+                .unwrap()
+                .len(),
+            5
+        );
     }
 
     #[test]

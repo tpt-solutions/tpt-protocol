@@ -103,14 +103,29 @@ pub trait DataNormalizer {
 
     fn normalize(&self, frame: &Self::Frame) -> Result<tpt_protocol_tup::DataPoint, Error>;
 
-    /// Normalizes a batch of frames into a vector of DataPoints.
+    /// Every data point one frame carries. A frame can hold several values
+    /// (for example, a Sparkplug payload with many metrics).
     ///
-    /// The default implementation calls `normalize` for each frame.
+    /// The default is the single point from `normalize`. Override it when a
+    /// frame fans out.
+    fn normalize_all(
+        &self,
+        frame: &Self::Frame,
+    ) -> Result<alloc::vec::Vec<tpt_protocol_tup::DataPoint>, Error> {
+        Ok(alloc::vec![self.normalize(frame)?])
+    }
+
+    /// Normalizes a batch of frames into one vector of DataPoints. Each frame
+    /// contributes all of its points, from [`normalize_all`](Self::normalize_all).
     fn normalize_batch(
         &self,
         frames: &[Self::Frame],
     ) -> Result<alloc::vec::Vec<tpt_protocol_tup::DataPoint>, Error> {
-        frames.iter().map(|f| self.normalize(f)).collect()
+        let mut out = alloc::vec::Vec::new();
+        for frame in frames {
+            out.extend(self.normalize_all(frame)?);
+        }
+        Ok(out)
     }
 }
 

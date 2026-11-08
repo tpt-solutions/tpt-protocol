@@ -483,6 +483,11 @@ impl SdcNormalizer {
 impl DataNormalizer for SdcNormalizer {
     type Frame = SdcFrame;
 
+    /// Every numeric observation of the message.
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        Ok(self.points(frame))
+    }
+
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
         self.points(frame)
             .into_iter()
@@ -638,6 +643,15 @@ mod tests {
     #[test]
     fn non_utf8_is_rejected() {
         assert!(SdcParser.parse(&[0xFF, 0xFE, 0x00]).is_err());
+    }
+
+    #[test]
+    fn normalize_batch_fans_out_observations() {
+        let frame = SdcParser.parse(message(TWO_NUMERICS).as_bytes()).unwrap();
+        let points = SdcNormalizer
+            .normalize_batch(&[frame.clone(), frame])
+            .unwrap();
+        assert_eq!(points.len(), 4);
     }
 
     #[test]
