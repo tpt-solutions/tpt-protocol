@@ -24,6 +24,9 @@ pub enum Dnp3FunctionCode {
     FreezeNoAck,
     FreezeClear,
     FreezeClearNoAck,
+    Confirm,
+    Response,
+    UnsolicitedResponse,
     Unknown(u8),
 }
 
@@ -40,6 +43,9 @@ impl Dnp3FunctionCode {
             8 => Self::FreezeNoAck,
             9 => Self::FreezeClear,
             10 => Self::FreezeClearNoAck,
+            0 => Self::Confirm,
+            129 => Self::Response,
+            130 => Self::UnsolicitedResponse,
             other => Self::Unknown(other),
         }
     }
@@ -58,6 +64,9 @@ impl fmt::Display for Dnp3FunctionCode {
             Self::FreezeNoAck => write!(f, "FreezeNoAck"),
             Self::FreezeClear => write!(f, "FreezeClear"),
             Self::FreezeClearNoAck => write!(f, "FreezeClearNoAck"),
+            Self::Confirm => write!(f, "Confirm"),
+            Self::Response => write!(f, "Response"),
+            Self::UnsolicitedResponse => write!(f, "UnsolicitedResponse"),
             Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
@@ -74,6 +83,10 @@ pub struct Dnp3Frame {
     pub data_link_crc: u16,
     pub transport_final: bool,
     pub transport_seq: u8,
+    /// True when this is the first fragment (FIR bit), which carries the application header.
+    pub transport_first: bool,
+    /// Application control byte (FIR, FIN, CON, UNS, SEQ). Zero when absent.
+    pub application_control: u8,
     pub app_function: Dnp3FunctionCode,
     pub payload: Vec<u8>,
 }
@@ -104,7 +117,8 @@ fn crc16_dnp(data: &[u8]) -> u16 {
     !crc
 }
 
-/// DNP3 frame parser.
+/// DNP3 frame parser: IEEE 1815 data link layer, then transport and
+/// application headers from the user data.
 #[derive(Clone, Debug, Default)]
 pub struct Dnp3Parser;
 
@@ -114,87 +128,128 @@ impl Dnp3Parser {
     }
 }
 
-impl FrameParser for Dnp3Parser {
-    type Frame = Dnp3Frame;
-
-    fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
-        if bytes.len() < 8 {
-            return Err(Error::Parse(format!(
-                "DNP3 frame too short: {} bytes, need at least 8",
-                bytes.len(),
-            )));
-        }
-
-        // Data link header
+/// Decodes one frame from the front of `bytes`. Returns `Ok(None)` when more
+/// bytes are needed, and `Ok(Some((frame, consumed)))` otherwise.
+fn decode_frame(bytes: &[u8]) -> Result<Option<(Dnp3Frame, usize)>, Error> {
+    if bytes.len() >= 2 {
         let start = u16::from_be_bytes([bytes[0], bytes[1]]);
         if start != 0x0564 {
             return Err(Error::Parse(format!(
                 "DNP3 invalid start bytes: 0x{start:04X}, expected 0x0564",
             )));
         }
+    }
+    if bytes.len() < 10 {
+        return Ok(None);
+    }
 
-        let length = bytes[2];
-        let control = bytes[3];
-        let destination = u16::from_le_bytes([bytes[4], bytes[5]]);
-        let source = u16::from_le_bytes([bytes[6], bytes[7]]);
+    let length = bytes[2];
+    if length < 5 {
+        return Err(Error::Parse(format!(
+            "DNP3 length {length} is below the minimum of 5 (control, destination, source)",
+        )));
+    }
 
-        let expected_total = length as usize + 2; // +2 for start bytes
-                                                  // The data-link CRC lives at bytes[8..10], so we must have the full
-                                                  // 10-byte header (start + length + control + dest + src + CRC) before
-                                                  // indexing it, independent of the advertised `length` field.
-        if bytes.len() < 10 || bytes.len() < expected_total {
+    // The header CRC covers all eight bytes before it, start bytes included.
+    let header_crc = u16::from_le_bytes([bytes[8], bytes[9]]);
+    let computed = crc16_dnp(&bytes[0..8]);
+    if computed != header_crc {
+        return Err(Error::Parse(format!(
+            "DNP3 header CRC mismatch: computed 0x{computed:04X}, got 0x{header_crc:04X}",
+        )));
+    }
+    let control = bytes[3];
+    let destination = u16::from_le_bytes([bytes[4], bytes[5]]);
+    let source = u16::from_le_bytes([bytes[6], bytes[7]]);
+
+    // User data follows in blocks of up to 16 bytes, each with its own CRC.
+    let mut remaining = length as usize - 5;
+    let mut user = Vec::with_capacity(remaining);
+    let mut pos = 10usize;
+    while remaining > 0 {
+        let block = remaining.min(16);
+        let data_end = pos + block;
+        if bytes.len() < data_end + 2 {
+            return Ok(None);
+        }
+        let got = u16::from_le_bytes([bytes[data_end], bytes[data_end + 1]]);
+        let computed = crc16_dnp(&bytes[pos..data_end]);
+        if computed != got {
             return Err(Error::Parse(format!(
-                "DNP3 truncated: have {} bytes, need at least {}",
-                bytes.len(),
-                expected_total.max(10),
+                "DNP3 data block CRC mismatch at offset {pos}: computed 0x{computed:04X}, got 0x{got:04X}",
             )));
         }
+        user.extend_from_slice(&bytes[pos..data_end]);
+        pos = data_end + 2;
+        remaining -= block;
+    }
 
-        // Validate data link CRC over bytes 2-7
-        let data_link_crc = u16::from_le_bytes([bytes[8], bytes[9]]);
-        let computed_crc = crc16_dnp(&bytes[2..8]);
-        if computed_crc != data_link_crc {
-            return Err(Error::Parse(format!(
-                "DNP3 data link CRC mismatch: computed 0x{computed_crc:04X}, got 0x{data_link_crc:04X}",
-            )));
+    // Transport header: FIN (0x80), FIR (0x40), sequence (0x3F).
+    let (transport_first, transport_final, transport_seq, rest) = match user.split_first() {
+        Some((&th, rest)) => (th & 0x40 != 0, th & 0x80 != 0, th & 0x3F, rest),
+        None => (true, true, 0, &user[..]),
+    };
+
+    // Application header (control, function code) is only present in the first
+    // fragment. Continuation fragments are all data.
+    let (application_control, app_function, payload) = if user.is_empty() {
+        // Link-layer-only frame: no transport or application data.
+        (0, Dnp3FunctionCode::Unknown(0), Vec::new())
+    } else if transport_first {
+        match rest {
+            [control, function, data @ ..] => (
+                *control,
+                Dnp3FunctionCode::from_u8(*function),
+                data.to_vec(),
+            ),
+            _ => {
+                return Err(Error::Parse(
+                    "DNP3 first fragment is too short for an application header".into(),
+                ))
+            }
         }
+    } else {
+        (0, Dnp3FunctionCode::Unknown(0), rest.to_vec())
+    };
 
-        // Transport header (byte after CRC, if available)
-        let transport_start = 10usize;
-        let (transport_final, transport_seq, app_start) = if bytes.len() > transport_start {
-            let th = bytes[transport_start];
-            let fin = (th & 0x80) != 0;
-            let seq = th & 0x3F;
-            (fin, seq, transport_start + 1)
-        } else {
-            (true, 0, transport_start)
-        };
-
-        // Application layer function code
-        let (app_function, payload) = if bytes.len() > app_start {
-            let fc = Dnp3FunctionCode::from_u8(bytes[app_start]);
-            let data = if app_start + 1 < bytes.len() {
-                bytes[app_start + 1..].to_vec()
-            } else {
-                Vec::new()
-            };
-            (fc, data)
-        } else {
-            (Dnp3FunctionCode::Unknown(0), Vec::new())
-        };
-
-        Ok(Dnp3Frame {
-            start,
+    Ok(Some((
+        Dnp3Frame {
+            start: 0x0564,
             length,
             control,
             destination,
             source,
-            data_link_crc,
+            data_link_crc: header_crc,
             transport_final,
             transport_seq,
+            transport_first,
+            application_control,
             app_function,
             payload,
-        })
+        },
+        pos,
+    )))
+}
+
+impl FrameParser for Dnp3Parser {
+    type Frame = Dnp3Frame;
+
+    fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
+        match decode_frame(bytes)? {
+            None => Err(Error::Parse(format!(
+                "DNP3 frame incomplete: have {} bytes",
+                bytes.len(),
+            ))),
+            Some((frame, consumed)) if consumed == bytes.len() => Ok(frame),
+            Some((_, consumed)) => Err(Error::Parse(format!(
+                "DNP3 has {} trailing bytes after the frame",
+                bytes.len() - consumed,
+            ))),
+        }
+    }
+
+    fn try_parse(&self, bytes: &[u8]) -> Result<Option<(Self::Frame, usize)>, Error> {
+        decode_frame(bytes)
     }
 }
 
@@ -282,33 +337,10 @@ mod tests {
     use alloc::vec;
 
     fn make_dnp3_frame(src: u16, dest: u16, ctrl: u8, func: u8, payload: &[u8]) -> Vec<u8> {
-        let mut header = Vec::new();
-        header.push(ctrl);
-        header.extend_from_slice(&dest.to_le_bytes());
-        header.extend_from_slice(&src.to_le_bytes());
-
-        let transport_only = 0xC0u8; // final + seq 0
-                                     // Frame: start(2) + length(1) + header(5) + CRC(2) + transport(1) + func(1) + payload(N)
-        let total_len = 2 + 1 + 5 + 2 + 1 + 1 + payload.len();
-        // Length field = everything after start bytes
-        let length = (total_len - 2) as u8;
-
-        let mut buf = Vec::with_capacity(total_len);
-        buf.extend_from_slice(&0x0564u16.to_be_bytes());
-        buf.push(length);
-        buf.extend_from_slice(&header);
-        // CRC placeholder
-        buf.push(0x00);
-        buf.push(0x00);
-        buf.push(transport_only);
-        buf.push(func);
-        buf.extend_from_slice(payload);
-
-        // Compute CRC over bytes 2..8 (length + header)
-        let crc = crc16_dnp(&buf[2..8]);
-        buf[8] = (crc & 0xFF) as u8;
-        buf[9] = ((crc >> 8) & 0xFF) as u8;
-        buf
+        // Transport byte 0xC0 (FIN + FIR, seq 0), then application control 0xC0.
+        let mut user = vec![0xC0, 0xC0, func];
+        user.extend_from_slice(payload);
+        build_dnp3(dest, src, ctrl, &user)
     }
 
     #[test]
@@ -407,6 +439,141 @@ mod tests {
             error_count: 0,
         };
         assert!(validator.validate(&state).is_err());
+    }
+
+    /// Builds a DNP3 frame from the IEEE 1815 layout: a 10-byte header with its
+    /// CRC over bytes 0..8 (start bytes included), then user data in blocks of
+    /// up to 16 bytes, each followed by its own CRC.
+    fn build_dnp3(dest: u16, src: u16, ctrl: u8, user: &[u8]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&[0x05, 0x64]);
+        out.push((user.len() + 5) as u8);
+        out.push(ctrl);
+        out.extend_from_slice(&dest.to_le_bytes());
+        out.extend_from_slice(&src.to_le_bytes());
+        let header_crc = crc16_dnp(&out[0..8]);
+        out.extend_from_slice(&header_crc.to_le_bytes());
+        for chunk in user.chunks(16) {
+            out.extend_from_slice(chunk);
+            out.extend_from_slice(&crc16_dnp(chunk).to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn accepts_published_link_layer_vector() {
+        // Link-layer-only frame from the DNP3 documentation examples: start,
+        // length 5, control 0xC0, destination 1, source 0x0400, header CRC 0x21E9.
+        let bytes = [0x05, 0x64, 0x05, 0xC0, 0x01, 0x00, 0x00, 0x04, 0xE9, 0x21];
+        let frame = Dnp3Parser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.destination, 1);
+        assert_eq!(frame.source, 0x0400); // bytes 00 04, little-endian
+        assert!(frame.payload.is_empty());
+    }
+
+    #[test]
+    fn crc_matches_standard_check_value() {
+        // CRC-16/DNP check value for the ASCII string "123456789".
+        assert_eq!(crc16_dnp(b"123456789"), 0xEA82);
+    }
+
+    #[test]
+    fn header_crc_covers_start_bytes() {
+        // A header CRC computed over bytes 2..8 (the old, wrong convention)
+        // must be rejected.
+        let mut bytes = build_dnp3(0x0A, 0x01, 0x44, &[0xC0, 0xC0, 0x01]);
+        let wrong = crc16_dnp(&bytes[2..8]);
+        bytes[8..10].copy_from_slice(&wrong.to_le_bytes());
+        assert!(Dnp3Parser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn multi_block_user_data_is_reassembled() {
+        // 35 bytes of user data = blocks of 16, 16 and 3, each with a CRC.
+        let mut user = vec![0xC0, 0xC0, 0x81];
+        user.extend((1u8..=32).collect::<Vec<u8>>());
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &user);
+        assert_eq!(bytes.len(), 10 + 35 + 2 * 3);
+        let frame = Dnp3Parser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.app_function, Dnp3FunctionCode::Response);
+        assert_eq!(frame.payload, (1u8..=32).collect::<Vec<u8>>());
+    }
+
+    #[test]
+    fn corrupt_block_crc_is_rejected() {
+        let mut user = vec![0xC0, 0xC0, 0x01];
+        user.extend((0u8..20).collect::<Vec<u8>>());
+        let mut bytes = build_dnp3(0x0A, 0x01, 0x44, &user);
+        // Flip one data byte in the second block (offset 10 + 16 + 2).
+        bytes[28] ^= 0x01;
+        assert!(Dnp3Parser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn truncated_block_needs_more_data() {
+        let user = vec![0xC0, 0xC0, 0x01, 0xAA, 0xBB];
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &user);
+        let short = &bytes[..bytes.len() - 1];
+        assert_eq!(Dnp3Parser::new().try_parse(short).unwrap(), None);
+        assert!(Dnp3Parser::new().parse(short).is_err());
+    }
+
+    #[test]
+    fn try_parse_reports_exact_consumed_length() {
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &[0xC0, 0xC0, 0x01]);
+        let mut with_trailing = bytes.clone();
+        with_trailing.push(0xFF);
+        let (_, consumed) = Dnp3Parser::new()
+            .try_parse(&with_trailing)
+            .unwrap()
+            .unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert!(Dnp3Parser::new().parse(&with_trailing).is_err());
+    }
+
+    #[test]
+    fn link_only_frame_has_no_user_data() {
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &[]);
+        assert_eq!(bytes.len(), 10);
+        let frame = Dnp3Parser::new().parse(&bytes).unwrap();
+        assert!(frame.payload.is_empty());
+    }
+
+    #[test]
+    fn length_below_minimum_is_rejected() {
+        // length 4 cannot hold control + destination + source.
+        let mut out = vec![0x05, 0x64, 0x04, 0x44, 0x0A, 0x00, 0x01, 0x00];
+        let crc = crc16_dnp(&out[0..8]);
+        out.extend_from_slice(&crc.to_le_bytes());
+        assert!(Dnp3Parser::new().parse(&out).is_err());
+    }
+
+    #[test]
+    fn application_control_byte_is_parsed() {
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &[0xC0, 0x5A, 0x01]);
+        let frame = Dnp3Parser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.application_control, 0x5A);
+        assert_eq!(frame.app_function, Dnp3FunctionCode::Read);
+    }
+
+    #[test]
+    fn continuation_fragment_has_no_application_header() {
+        // Transport byte 0x00: not the first fragment, so 0x5A is data, not app control.
+        let bytes = build_dnp3(0x0A, 0x01, 0x44, &[0x00, 0x5A, 0x01]);
+        let frame = Dnp3Parser::new().parse(&bytes).unwrap();
+        assert!(!frame.transport_first);
+        assert_eq!(frame.application_control, 0);
+        assert_eq!(frame.payload, vec![0x5A, 0x01]);
+    }
+
+    #[test]
+    fn response_function_code_is_recognized() {
+        assert_eq!(Dnp3FunctionCode::from_u8(0x81), Dnp3FunctionCode::Response);
+        assert_eq!(
+            Dnp3FunctionCode::from_u8(0x82),
+            Dnp3FunctionCode::UnsolicitedResponse
+        );
+        assert_eq!(Dnp3FunctionCode::from_u8(0x00), Dnp3FunctionCode::Confirm);
     }
 
     #[test]
