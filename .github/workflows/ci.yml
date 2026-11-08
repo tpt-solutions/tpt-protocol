@@ -45,6 +45,16 @@ jobs:
           targets: thumbv6m-none-eabi
       - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --exclude tpt-protocol-telos --target thumbv6m-none-eabi
 
+  msrv:
+    # Pinned to the workspace rust-version. The ui-* apps need Rust 1.90 and
+    # are excluded here; they declare their own rust-version.
+    name: MSRV (1.81)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.81
+      - run: cargo check --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded
+
   cargo-deny:
     runs-on: ubuntu-latest
     steps:

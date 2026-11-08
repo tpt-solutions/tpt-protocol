@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "tpt-protocol-ui-web"
 version = "0.1.0"
 description = "Tauri v2 + SvelteKit fleet dashboard for the TPT Protocol daemon"
@@ -6,7 +7,7 @@ keywords = ["tpt", "protocol", "ui", "tauri", "dashboard"]
 categories = ["gui"]
 authors.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.90"
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true

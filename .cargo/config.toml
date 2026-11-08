@@ -1,0 +1,5 @@
+# Dependency resolution prefers versions compatible with each crate's
+# rust-version. This key needs Cargo 1.84+; older Cargo ignores it with a warning.
+# The workspace MSRV (1.81) is enforced by the `msrv` job in .github/workflows/ci.yml.
+[resolver]
+incompatible-rust-versions = "fallback"

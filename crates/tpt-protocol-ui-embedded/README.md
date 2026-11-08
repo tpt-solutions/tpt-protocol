@@ -115,3 +115,7 @@ tpt-protocol-ui-embedded/
 
 Licensed under either of [MIT](../../LICENSE-MIT) or
 [Apache-2.0](../../LICENSE-APACHE) at your option.
+
+## Rust version
+
+This app needs Rust **1.90** or newer (`rust-version = "1.90"` in `Cargo.toml`). It is separate from the workspace library MSRV (1.81), which the `msrv` CI job checks. It is not published (`publish = false`).
