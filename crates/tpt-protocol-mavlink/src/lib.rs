@@ -320,6 +320,31 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Rewrites the trailing CRC of a v1 frame so it is computed with the
+    /// given CRC_EXTRA seed, leaving every other byte untouched.
+    fn resign_v1(bytes: &mut [u8], extra: u8) {
+        let len = bytes.len();
+        let crc = mavlink::calculate_crc(&bytes[1..len - 2], extra);
+        bytes[len - 2..].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn crc_extra_seed_is_enforced() {
+        // HEARTBEAT (msg 0) carries a per-message CRC_EXTRA seed. A frame with
+        // a self-consistent CRC computed under the wrong seed must be rejected,
+        // proving the seed is checked and not just the payload CRC.
+        let parser = MavlinkParser::new();
+        let correct = <MavMessage as mavlink::Message>::extra_crc(0);
+
+        let mut good = make_frame(WireVersion::V1, 1, 1);
+        resign_v1(&mut good, correct);
+        assert!(parser.parse(&good).is_ok());
+
+        let mut bad = make_frame(WireVersion::V1, 1, 1);
+        resign_v1(&mut bad, correct.wrapping_add(1));
+        assert!(parser.parse(&bad).is_err());
+    }
+
     #[test]
     fn garbage_input() {
         let parser = MavlinkParser::new();
