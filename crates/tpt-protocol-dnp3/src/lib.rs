@@ -154,9 +154,11 @@ fn decode_frame(bytes: &[u8]) -> Result<Option<(Dnp3Frame, usize)>, Error> {
     let header_crc = u16::from_le_bytes([bytes[8], bytes[9]]);
     let computed = crc16_dnp(&bytes[0..8]);
     if computed != header_crc {
-        return Err(Error::Parse(format!(
-            "DNP3 header CRC mismatch: computed 0x{computed:04X}, got 0x{header_crc:04X}",
-        )));
+        return Err(Error::checksum(
+            computed as u32,
+            header_crc as u32,
+            "DNP3 header CRC",
+        ));
     }
     let control = bytes[3];
     let destination = u16::from_le_bytes([bytes[4], bytes[5]]);
@@ -175,9 +177,11 @@ fn decode_frame(bytes: &[u8]) -> Result<Option<(Dnp3Frame, usize)>, Error> {
         let got = u16::from_le_bytes([bytes[data_end], bytes[data_end + 1]]);
         let computed = crc16_dnp(&bytes[pos..data_end]);
         if computed != got {
-            return Err(Error::Parse(format!(
-                "DNP3 data block CRC mismatch at offset {pos}: computed 0x{computed:04X}, got 0x{got:04X}",
-            )));
+            return Err(Error::checksum(
+                computed as u32,
+                got as u32,
+                format!("DNP3 data block CRC at offset {pos}"),
+            ));
         }
         user.extend_from_slice(&bytes[pos..data_end]);
         pos = data_end + 2;

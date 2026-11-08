@@ -425,9 +425,11 @@ fn parse_rtu_pdu(bytes: &[u8], dir: Direction) -> Result<(u8, ModbusFrame, u16),
     let crc_input = &bytes[..bytes.len() - 2];
     let computed_crc = crc16_modbus(crc_input);
     if computed_crc != expected_crc {
-        return Err(Error::Parse(format!(
-            "CRC mismatch: computed 0x{computed_crc:04X}, expected 0x{expected_crc:04X}"
-        )));
+        return Err(Error::checksum(
+            computed_crc as u32,
+            expected_crc as u32,
+            "Modbus RTU CRC",
+        ));
     }
 
     let frame = parse_pdu(func, data, dir)?;
@@ -926,7 +928,7 @@ mod tests {
         let result = parser.parse(&bytes);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(matches!(err, Error::Parse(_)));
+        assert!(matches!(err, Error::Checksum { .. }));
         assert!(err.to_string().contains("CRC"));
     }
 

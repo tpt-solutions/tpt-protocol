@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Core:** `Error::Checksum` carries `u32` values (it was `u8`, which cannot hold a 16-bit CRC). Modbus RTU,
+  DNP3 and NMEA use it for checksum mismatches, so callers can match on the variant.
 - **IEEE 11073 SDC:** the parser reads SOAP 1.2 XML, with a bounded XML parser, the WS-Addressing headers, and numeric
   observations. The previous binary layout was not SDC. BICEPS names are unverified against a device.
 - **Daemon:** replayed points with timestamp 0 are stamped with the current time at ingest. Normalizers still leave 0,

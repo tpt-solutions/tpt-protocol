@@ -190,9 +190,11 @@ impl FrameParser for NmeaParser {
 
         let computed_csum = compute_nmea_checksum(&s.as_bytes()[1..csum_star]);
         if computed_csum != expected_csum {
-            return Err(Error::Parse(format!(
-                "NMEA checksum mismatch: computed 0x{computed_csum:02X}, got 0x{expected_csum:02X}"
-            )));
+            return Err(Error::checksum(
+                computed_csum as u32,
+                expected_csum as u32,
+                "NMEA checksum",
+            ));
         }
         // Mismatches are rejected above, so every parsed frame has a valid checksum.
         let checksum_valid = true;

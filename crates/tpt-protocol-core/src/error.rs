@@ -10,9 +10,11 @@ pub enum Error {
     Cbor(String),
     Transport(String),
     Config(String),
+    /// A checksum or CRC mismatch. `expected` is the value computed from the
+    /// data, and `actual` is the value that arrived. `u32` covers CRC-32.
     Checksum {
-        expected: u8,
-        actual: u8,
+        expected: u32,
+        actual: u32,
         message: String,
     },
     Overflow {
@@ -51,7 +53,7 @@ impl Error {
         Self::Config(msg.into())
     }
 
-    pub fn checksum(expected: u8, actual: u8, msg: impl Into<String>) -> Self {
+    pub fn checksum(expected: u32, actual: u32, msg: impl Into<String>) -> Self {
         Self::Checksum {
             expected,
             actual,
@@ -91,7 +93,7 @@ impl fmt::Display for Error {
             } => {
                 write!(
                     f,
-                    "checksum mismatch: expected {expected:#04x}, got {actual:#04x} — {message}"
+                    "checksum mismatch: expected {expected:#x}, got {actual:#x} — {message}"
                 )
             }
             Self::Overflow {
