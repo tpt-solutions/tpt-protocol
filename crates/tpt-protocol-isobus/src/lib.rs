@@ -212,7 +212,8 @@ impl DataNormalizer for IsobusNormalizer {
         let timestamp = 0;
 
         let value = if frame.payload.len() >= 4 {
-            let raw = u32::from_be_bytes([
+            // Little-endian on the wire.
+            let raw = u32::from_le_bytes([
                 frame.payload[0],
                 frame.payload[1],
                 frame.payload[2],
@@ -296,6 +297,17 @@ mod tests {
         let parser = IsobusParser::new();
         let result = parser.parse(&[0xFF, 0xFF, 0xFF, 0xFF]);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn normalize_reads_little_endian_payload() {
+        // ISO 11783 multi-byte fields are little-endian: [0x01, 0x02] means 0x0201.
+        let parser = IsobusParser::new();
+        let normalizer = IsobusNormalizer::new();
+        let bytes = make_isobus_frame(0xF0, 0x04, 0x30, &[0x01, 0x02, 0x00, 0x00]);
+        let frame = parser.parse(&bytes).unwrap();
+        let dp = normalizer.normalize(&frame).unwrap();
+        assert_eq!(dp.value, TupValue::Int(0x0201));
     }
 
     #[test]

@@ -216,7 +216,8 @@ impl DataNormalizer for CanOpenNormalizer {
         let timestamp = 0;
 
         let value = if frame.payload.len() >= 4 {
-            let raw = u32::from_be_bytes([
+            // Little-endian on the wire.
+            let raw = u32::from_le_bytes([
                 frame.payload[0],
                 frame.payload[1],
                 frame.payload[2],
@@ -298,10 +299,21 @@ mod tests {
     }
 
     #[test]
+    fn normalize_reads_little_endian_payload() {
+        // CAN/CANopen data is little-endian: bytes [0x01, 0x02] mean 0x0201.
+        let parser = CanOpenParser::new();
+        let normalizer = CanOpenNormalizer::new();
+        let bytes = make_canopen_frame(0x03, 0x10, &[0x01, 0x02, 0x00, 0x00]);
+        let frame = parser.parse(&bytes).unwrap();
+        let dp = normalizer.normalize(&frame).unwrap();
+        assert_eq!(dp.value, TupValue::Int(0x0201));
+    }
+
+    #[test]
     fn normalize_roundtrip() {
         let parser = CanOpenParser::new();
         let normalizer = CanOpenNormalizer::new();
-        let bytes = make_canopen_frame(0x03, 0x10, &[0x00, 0x00, 0x00, 0x2A]);
+        let bytes = make_canopen_frame(0x03, 0x10, &[0x2A, 0x00, 0x00, 0x00]);
         let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Canopen);
