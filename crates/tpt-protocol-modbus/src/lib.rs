@@ -273,12 +273,56 @@ impl FrameParser for ModbusParser {
         }
     }
 
+    /// Frames one message from the front of `bytes` (a stream buffer).
+    ///
+    /// TCP frames carry their length in the MBAP header, so they are framed
+    /// exactly. RTU frames have no length field, so the shortest prefix that
+    /// parses with a valid CRC is taken. Ambiguity is possible: a prefix can
+    /// match by chance (about 1 in 65,536 per candidate length).
+    /// `Ok(None)` means more bytes are needed.
     fn try_parse(&self, bytes: &[u8]) -> Result<Option<(Self::Frame, usize)>, Error> {
         if bytes.len() < 4 {
             return Ok(None);
         }
-        self.parse(bytes).map(|f| Some((f, bytes.len())))
+        // RTU first: the shortest prefix with a valid CRC. A valid CRC is strong
+        // evidence, so it wins over the weaker TCP header check. The longest RTU
+        // ADU is 256 bytes.
+        let max = bytes.len().min(256);
+        for len in 4..=max {
+            if let Ok(frame) = self.parse(&bytes[..len]) {
+                return Ok(Some((frame, len)));
+            }
+        }
+        // TCP: the MBAP length gives the exact frame length.
+        if let Some(total) = tcp_frame_length(bytes) {
+            if bytes.len() < total {
+                return Ok(None);
+            }
+            return Ok(Some((self.parse(&bytes[..total])?, total)));
+        }
+        if bytes.len() >= 256 {
+            return Err(Error::Parse(
+                "no Modbus RTU frame in the first 256 bytes".into(),
+            ));
+        }
+        Ok(None)
     }
+}
+
+/// The total length of a TCP frame at the start of `bytes`, if it looks like one
+/// (protocol id 0, a valid MBAP length, and an RTU CRC that does not match).
+fn tcp_frame_length(bytes: &[u8]) -> Option<usize> {
+    let n = bytes.len();
+    if n < 8 || bytes[2] != 0x00 || bytes[3] != 0x00 {
+        return None;
+    }
+    let rtu_crc_ok =
+        n >= 4 && crc16_modbus(&bytes[..n - 2]) == u16::from_le_bytes([bytes[n - 2], bytes[n - 1]]);
+    if rtu_crc_ok {
+        return None;
+    }
+    let tcp_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    (tcp_len >= 2).then_some(6 + tcp_len)
 }
 
 fn frame_to_func_code(frame: &ModbusFrame) -> u8 {
@@ -1105,6 +1149,49 @@ mod tests {
         let (frame, consumed) = result.unwrap();
         assert_eq!(consumed, bytes.len());
         assert_eq!(frame.slave_address, 0x01);
+    }
+
+    #[test]
+    fn try_parse_tcp_partial_frame_needs_more_data() {
+        let bytes = build_tcp_frame(0x0001, 0x01, 0x03, &[0x00, 0x00, 0x00, 0x05]);
+        let parser = ModbusParser::new();
+        assert_eq!(parser.try_parse(&bytes[..bytes.len() - 1]).unwrap(), None);
+    }
+
+    #[test]
+    fn try_parse_tcp_consumes_exactly_one_frame() {
+        let first = build_tcp_frame(0x0001, 0x01, 0x03, &[0x00, 0x00, 0x00, 0x05]);
+        let mut stream = first.clone();
+        stream.extend_from_slice(&build_tcp_frame(
+            0x0002,
+            0x01,
+            0x03,
+            &[0x00, 0x00, 0x00, 0x01],
+        ));
+        let (_, consumed) = ModbusParser::new().try_parse(&stream).unwrap().unwrap();
+        assert_eq!(consumed, first.len());
+    }
+
+    #[test]
+    fn try_parse_rtu_partial_frame_needs_more_data() {
+        let bytes = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 0x0A]);
+        let parser = ModbusParser::new();
+        assert_eq!(parser.try_parse(&bytes[..bytes.len() - 1]).unwrap(), None);
+    }
+
+    #[test]
+    fn try_parse_rtu_stream_yields_frames_in_order() {
+        let first = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 0x0A]);
+        let second = build_rtu_frame(0x02, 0x03, &[0x00, 0x10, 0x00, 0x02]);
+        let mut stream = first.clone();
+        stream.extend_from_slice(&second);
+        let parser = ModbusParser::new();
+        let (frame, consumed) = parser.try_parse(&stream).unwrap().unwrap();
+        assert_eq!(frame.slave_address, 0x01);
+        assert_eq!(consumed, first.len());
+        let (frame, consumed) = parser.try_parse(&stream[consumed..]).unwrap().unwrap();
+        assert_eq!(frame.slave_address, 0x02);
+        assert_eq!(consumed, second.len());
     }
 
     #[test]

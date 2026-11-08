@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Modbus:** `try_parse` frames streams. It returns `Ok(None)` for an incomplete frame and the exact consumed
+  length. TCP uses the MBAP length, and RTU takes the shortest CRC-valid prefix. RTU framing can be ambiguous
+  by chance (about 1 in 65,536 per candidate length).
 - **KNX:** the parser reads cEMI `L_Data` frames. The previous layout was not KNX. Priority, hop count, source
   individual address, group or individual destination, and APCI service are decoded. `DptValue` is now `Short` or `Data`.
   DPT decoding is explicit: `decode_dpt1`, `decode_dpt5_percent` and `decode_dpt9`.
