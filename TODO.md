@@ -273,8 +273,8 @@ them). This phase closes both gaps and adds core adoption tooling.
 - [x] Remove stale `out-protocol-*` text (README, CLAUDE.md, TODO header/Pattern B, "2 remain private"); no such crate exists
 - [ ] Fix counts: "21 published crates", README "16 more", TODO "206 tests", CI "four jobs" (five with cargo-deny)
 - [ ] Fix README `tpt-telos` crates.io link name; `main` vs `master` in CONTRIBUTING.md; CONTRIBUTING no_std command fails on std crates
-- [ ] CHANGELOG "Known gaps" MAVLink CRC_EXTRA entry removed (done); still open: `spec.txt` §5 layout and NMEA 2000/DoIP numbering are out of date
-- [ ] Correct overstated claims: "all 19 wired" is simulation only (sine wave, parser never used), "no alloc" for tup/core
+- [x] CHANGELOG "Known gaps" MAVLink CRC_EXTRA entry removed (done); `spec.txt` §5 layout now matches the crates, the protocol list is numbered 1-19, and NMEA is described as NMEA 0183 (NMEA 2000 not implemented)
+- [ ] Correct overstated claims: "all 19 wired" is simulation only (sine wave, parser never used), "no alloc" for tup/core — **partial: README no longer says critical state machines are formally verified (telos checks three Modbus specs). The "all 19 wired" claim should be read as simulation only, and "no alloc" is fixed in tup's README. Still open: check the remaining README and daemon docs for the same kind of claim.**
 - [ ] `CODE_OF_CONDUCT.md` (done: `SECURITY.md`, issue/PR templates, `dependabot.yml`)
 - [x] `daemon` is unpublishable (path-only deps); set `publish = false` on daemon/cli/ui/telos (done; hoisting `proptest`, tokio, clap, etc. to `[workspace.dependencies]` is still open)
 

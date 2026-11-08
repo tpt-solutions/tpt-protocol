@@ -101,7 +101,7 @@ hardware. Real transport (Serial/CAN/TCP/UDP) is future work.
 - **no_std by default**: All protocol crates compile to bare-metal targets (`thumbv6m-none-eabi`).
 - **Local-first**: The daemon binds its API to `127.0.0.1` only. Zero telemetry, zero cloud dependency.
 - **TUP envelope**: Every protocol normalizes into the TPT Unified Protocol — CBOR on the wire, JSON for the UI, openly specified in `SPEC-TUP.md`.
-- **Memory-safe**: Written in Rust. Critical state machines are formally verified with `tpt-protocol-telos` (in this repository; not published).
+- **Memory-safe**: Written in Rust. `tpt-protocol-telos` formally checks three Modbus specifications (in this repository; not published). Other state machines are not yet covered.
 
 ## License
 

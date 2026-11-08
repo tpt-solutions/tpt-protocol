@@ -19,13 +19,13 @@ The software works perfectly offline. Data belongs on the local network or the e
 4. The Protocol Coverage (The 19)
 The backend is divided into 4 industry categories, each containing highly specialized, reusable crates:
 Heavy Machinery, Auto & Agriculture
-SAE J1939: Heavy-duty diesel vehicles (trucks, tractors, excavators).
-ISOBUS (ISO 11783): Agricultural tractor-implement communication.
-UDS (ISO 14229): Unified Diagnostic Services (The Right-to-Repair holy grail for ECU fault codes).
-CANopen: Robotics, medical devices, and marine network management.
+1. SAE J1939: Heavy-duty diesel vehicles (trucks, tractors, excavators).
+2. ISOBUS (ISO 11783): Agricultural tractor-implement communication.
+3. UDS (ISO 14229): Unified Diagnostic Services (The Right-to-Repair holy grail for ECU fault codes).
+4. CANopen: Robotics, medical devices, and marine network management.
 5. DoIP / SOME/IP: Modern automotive-Ethernet diagnostics, successor to CAN-based UDS.
 Marine & Aviation
-6. NMEA 2000 / 0183: Marine electronics, sonar, GPS, and engine integration.
+6. NMEA 0183 (sentences; NMEA 2000 is not yet implemented): Marine electronics, sonar, GPS, and engine integration.
 7. MAVLink: Lightweight telemetry for drones and UAVs.
 Industrial IoT, BMS & Energy
 8. Modbus RTU / TCP: The 50-year-old king of factory automation and solar inverters.
@@ -46,16 +46,16 @@ All 19 protocol crates normalize into one common, openly-specified message envel
 5. Architecture & The Multi-Target UI Strategy
 TPT Protocol is structured as a Headless Daemon that serves data to Three Distinct UI Consumers. This ensures the core remains pure and testable, while the UI can be optimized for the specific physical environment of the user.
 tpt-protocol/
-├── core/                   # The 19 protocol parsers (no_std, headless, zero-copy)
-├── tup/                    # tpt-protocol-tup: canonical normalized schema (CBOR + JSON), no_std
-├── daemon/                 # The background service
-│   ├── transport/          # Listens to physical hardware (Serial, CAN, TCP, UDP)
-│   ├── ipc/                # Local Inter-Process Communication (Unix sockets / Shared memory)
-│   └── api/                # Local WebSocket/REST server for web UIs
-│
-├── ui-cli/                 # PATH 1: Terminal UI (Rust + Ratatui)
-├── ui-embedded/            # PATH 2: Native Embedded UI (Rust + Slint / Iced)
-└── ui-web/                 # PATH 3: Local Web Dashboard (Tauri v2 + SvelteKit)
+├── crates/
+│   ├── tpt-protocol-tup/           # TUP envelope: CBOR and JSON encodings (no_std)
+│   ├── tpt-protocol-core/          # Traits: FrameParser, FrameEncoder, StateValidator, DataNormalizer, ProtocolPlugin
+│   ├── tpt-protocol-<name>/        # The 19 protocol crates (no_std), one per protocol
+│   ├── tpt-protocol-daemon/        # Background service: simulation, replay, local WebSocket API
+│   │                               # (real transport and IPC are not yet implemented)
+│   ├── tpt-protocol-cli/           # PATH 1: terminal UI (Rust + Ratatui)
+│   ├── tpt-protocol-ui-embedded/   # PATH 2: native UI (Rust + Slint)
+│   ├── tpt-protocol-ui-web/        # PATH 3: web dashboard (Tauri v2 + SvelteKit)
+│   └── tpt-protocol-telos/         # Formal checks of selected state machines
 
 Path 1: The Field Mechanic (Terminal UI / TUI)
 Tech: Rust + ratatui
