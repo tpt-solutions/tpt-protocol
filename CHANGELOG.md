@@ -61,6 +61,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Daemon:** replayed points with timestamp 0 are stamped with the current time at ingest. Normalizers still leave 0,
+  because they have no clock. `DataNormalizer` documents this.
 - **NMEA:** GGA, RMC, DBT, VHW and MWV normalize to their real fields (`NmeaNormalizer::points`). Coordinates are
   signed decimal degrees. Unknown sentences are labelled with their own letters, not `???`. A non-ASCII position
   field no longer panics.

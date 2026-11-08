@@ -82,9 +82,14 @@ macro_rules! def_protocol {
                         let frame = ($parser)
                             .parse(bytes)
                             .map_err(|e| format!("{e:?}"))?;
-                        ($normalizer)
+                        let mut dp = ($normalizer)
                             .normalize(&frame)
-                            .map_err(|e| format!("{e:?}"))
+                            .map_err(|e| format!("{e:?}"))?;
+                        // Normalizers have no clock and leave timestamp 0. Stamp it at ingest.
+                        if dp.timestamp == 0 {
+                            dp.timestamp = now_ms();
+                        }
+                        Ok(dp)
                     }
                 )+
                 other => Err(format!("unknown protocol: {other}")),

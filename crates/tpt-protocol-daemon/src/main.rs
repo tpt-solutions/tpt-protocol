@@ -464,6 +464,30 @@ mod tests {
     }
 
     #[test]
+    fn replayed_points_get_an_ingest_timestamp() {
+        // Write Single Register (slave 1, address 1, value 10). The normalizer leaves timestamp 0.
+        let mut bytes = vec![0x01, 0x06, 0x00, 0x01, 0x00, 0x0A];
+        let mut crc: u16 = 0xFFFF;
+        for &b in &bytes {
+            crc ^= b as u16;
+            for _ in 0..8 {
+                crc = if crc & 1 != 0 {
+                    (crc >> 1) ^ 0xA001
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        bytes.extend_from_slice(&crc.to_le_bytes());
+        let dp = plugins::replay_one("modbus", &bytes).unwrap();
+        assert!(
+            dp.timestamp > 1_700_000_000_000,
+            "timestamp {}",
+            dp.timestamp
+        );
+    }
+
+    #[test]
     fn loopback_bind_detection() {
         assert!(is_loopback_bind("127.0.0.1"));
         assert!(is_loopback_bind("localhost"));

@@ -94,6 +94,10 @@ pub trait StateValidator {
 /// let dp = n.normalize(&42.5).unwrap();
 /// assert_eq!(dp.device_id, "dev");
 /// ```
+///
+/// Normalizers have no clock, so they leave `timestamp` at 0 when the source
+/// carries no time. The ingesting caller stamps it. The daemon's replay path
+/// does this with the current time.
 pub trait DataNormalizer {
     type Frame: core::fmt::Debug + Clone + PartialEq;
 
