@@ -91,13 +91,16 @@ impl FrameParser for Hl7Parser {
             return Err(Error::Parse("hl7: first segment must be MSH".into()));
         }
 
-        let field_sep: String = if msh_raw.len() > 3 {
-            msh_raw[3..4].into()
-        } else {
-            return Err(Error::Parse("hl7: MSH too short".into()));
+        // Byte-indexed slicing of `&str` panics on non-char boundaries, so every
+        // slice below goes through `str::get`. The field separator must be a
+        // single ASCII byte (it is in every valid HL7 v2 message).
+        let field_sep: String = match msh_raw.get(3..4) {
+            Some(sep) if sep.is_ascii() => sep.into(),
+            Some(_) => return Err(Error::Parse("hl7: non-ASCII field separator".into())),
+            None => return Err(Error::Parse("hl7: MSH too short".into())),
         };
 
-        let msh_body = if msh_raw.len() > 4 { &msh_raw[4..] } else { "" };
+        let msh_body = msh_raw.get(4..).unwrap_or("");
         let msh_fields: Vec<&str> = msh_body.split(&field_sep).collect();
 
         let empty = "";
@@ -138,12 +141,12 @@ impl FrameParser for Hl7Parser {
         let mut segments = Vec::new();
 
         for seg_raw in segments_raw.iter().skip(1) {
-            let seg_name: String = if seg_raw.len() >= 3 {
-                seg_raw[..3].into()
-            } else {
+            // Malformed segments (too short, or a non-char-boundary name) are skipped.
+            let Some(seg_name) = seg_raw.get(..3) else {
                 continue;
             };
-            let seg_body = if seg_raw.len() > 3 { &seg_raw[3..] } else { "" };
+            let seg_name: String = seg_name.into();
+            let seg_body = seg_raw.get(3..).unwrap_or("");
             let fields_raw: Vec<&str> = seg_body.split(&field_sep).collect();
             let mut fields = Vec::new();
 
@@ -225,6 +228,25 @@ mod tests {
 
     fn make_oru_message() -> Vec<u8> {
         "MSH|^~\\&|LAB|HOSP|EHR|HOSP|20240101010000||ORU^R01|msg002|P|2.5|\rPID|1||67890^^^MRN^MRN||Smith^Jane||19850615|F|||456 Oak Ave^^Springfield^IL^62701^USA|||||\rOBR|1|ord123|spec456|LIPID^Lipid Panel^L|||20240101000000|||||||20240101010000|||F\rOBX|1|NM|CHOL^Cholesterol^L||190|mg/dL|100-199|N||F".as_bytes().to_vec()
+    }
+
+    #[test]
+    fn multibyte_field_separator_no_panic() {
+        // 'é' is two bytes at index 3, so `msh_raw[3..4]` would split a char.
+        let parser = Hl7Parser;
+        assert!(parser
+            .parse("MSHé|a|b|c|d|e|f|ADT^A01|1|P|2.5".as_bytes())
+            .is_err());
+    }
+
+    #[test]
+    fn multibyte_segment_name_no_panic() {
+        // "PIé" — slicing `seg_raw[..3]` lands inside 'é'. A malformed segment
+        // is skipped (like short segments), so the message still parses.
+        let parser = Hl7Parser;
+        let msg = "MSH|^~\\&|A|B|C|D|20240101||ADT^A01|1|P|2.5|\rPIé|1|x";
+        let frame = parser.parse(msg.as_bytes()).unwrap();
+        assert!(frame.segments.iter().all(|s| s.name.is_ascii()));
     }
 
     #[test]
