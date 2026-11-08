@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1, with the enforcement contact still to be filled in) and a `Dockerfile` for the daemon (untested: no Docker daemon was available).
 - Daemon transports: `--tcp-connect`, `--tcp-listen`, `--udp-bind` and (with the `serial` feature) `--serial` read real bytes and decode them with each protocol's `try_parse` and normalizer. CAN remains deferred.
 - `DataNormalizer::normalize_all` returns every point a frame carries. `normalize_batch` uses it, so batches fan out. Sparkplug, Matter, NMEA and SDC override it.
 - `FrameEncoder` trait in `tpt-protocol-core`, the inverse of `FrameParser`, and `ModbusEncoder`, with round-trip tests.

@@ -275,7 +275,7 @@ them). This phase closes both gaps and adds core adoption tooling.
 - [ ] Fix README `tpt-telos` crates.io link name; `main` vs `master` in CONTRIBUTING.md; CONTRIBUTING no_std command fails on std crates
 - [x] CHANGELOG "Known gaps" MAVLink CRC_EXTRA entry removed (done); `spec.txt` §5 layout now matches the crates, the protocol list is numbered 1-19, and NMEA is described as NMEA 0183 (NMEA 2000 not implemented)
 - [ ] Correct overstated claims: "all 19 wired" is simulation only (sine wave, parser never used), "no alloc" for tup/core — **partial: README no longer says critical state machines are formally verified (telos checks three Modbus specs). The "all 19 wired" claim should be read as simulation only, and "no alloc" is fixed in tup's README. Still open: check the remaining README and daemon docs for the same kind of claim.**
-- [ ] `CODE_OF_CONDUCT.md` (done: `SECURITY.md`, issue/PR templates, `dependabot.yml`)
+- [x] `CODE_OF_CONDUCT.md` (done: `SECURITY.md`, issue/PR templates, `dependabot.yml`) — **done: Contributor Covenant 2.1. Its enforcement contact is a placeholder that the maintainer must fill in.**
 - [x] `daemon` is unpublishable (path-only deps); set `publish = false` on daemon/cli/ui/telos (done; hoisting `proptest`, tokio, clap, etc. to `[workspace.dependencies]` is still open)
 
 ## Phase 11 — Parsers Must Match the Real Protocols
@@ -308,7 +308,7 @@ Add `tests/vectors/` per crate from real captures/vendor vectors so tests stop b
 - [ ] Daemon tests: `datapoint_to_json`, `is_loopback_bind`, config precedence, replay hex/binary, end-to-end WS with good/bad Origin; CLI tests for `parse_data_points`, `format_timestamp`, scrolling
 
 ## Phase 13 — Adoption Kit
-- [ ] Dockerfile + `docker run` quickstart for the daemon
+- [ ] Dockerfile + `docker run` quickstart for the daemon — **partial: a multi-stage Dockerfile and .dockerignore are written. Not built or run, because no Docker daemon was available. Verify with `docker build`.**
 - [ ] Release workflow (cargo-dist or release-plz) with prebuilt Windows/Linux/macOS binaries; `cargo package` dry-run CI job; README badges
 - [ ] Runnable `examples/parse_frame` for every protocol (only tup, core, modbus have one) plus sample frame files usable with `--replay`
 - [ ] Windows-friendly scaffolder (`cargo xtask new-protocol` or cargo-generate template) that also wires the daemon plugin and adds proptest + fuzz target (current script is bash-only and does neither)
