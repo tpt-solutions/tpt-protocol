@@ -16,16 +16,23 @@ use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 // DoIP types
 // ---------------------------------------------------------------------------
 
-/// DoIP payload type.
+/// DoIP payload type (ISO 13400-2).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DoipPayloadType {
     GenericDoipHeaderNegativeAck,
     VehicleIdentificationRequest,
+    VehicleIdentificationRequestEid,
+    VehicleIdentificationRequestVin,
+    /// Vehicle announcement / vehicle identification response.
     VehicleIdentificationResponse,
     RoutingActivationRequest,
     RoutingActivationResponse,
     AliveCheckRequest,
     AliveCheckResponse,
+    EntityStatusRequest,
+    EntityStatusResponse,
+    PowerModeInformationRequest,
+    PowerModeInformationResponse,
     DiagnosticMessage,
     DiagnosticMessagePositiveAck,
     DiagnosticMessageNegativeAck,
@@ -37,14 +44,20 @@ impl DoipPayloadType {
         match v {
             0x0000 => Self::GenericDoipHeaderNegativeAck,
             0x0001 => Self::VehicleIdentificationRequest,
-            0x0002 => Self::VehicleIdentificationResponse,
-            0x0003 => Self::RoutingActivationRequest,
-            0x0004 => Self::RoutingActivationResponse,
-            0x0005 => Self::AliveCheckRequest,
-            0x0006 => Self::AliveCheckResponse,
-            0x0007 => Self::DiagnosticMessage,
-            0x0008 => Self::DiagnosticMessagePositiveAck,
-            0x0009 => Self::DiagnosticMessageNegativeAck,
+            0x0002 => Self::VehicleIdentificationRequestEid,
+            0x0003 => Self::VehicleIdentificationRequestVin,
+            0x0004 => Self::VehicleIdentificationResponse,
+            0x0005 => Self::RoutingActivationRequest,
+            0x0006 => Self::RoutingActivationResponse,
+            0x0007 => Self::AliveCheckRequest,
+            0x0008 => Self::AliveCheckResponse,
+            0x4001 => Self::EntityStatusRequest,
+            0x4002 => Self::EntityStatusResponse,
+            0x4003 => Self::PowerModeInformationRequest,
+            0x4004 => Self::PowerModeInformationResponse,
+            0x8001 => Self::DiagnosticMessage,
+            0x8002 => Self::DiagnosticMessagePositiveAck,
+            0x8003 => Self::DiagnosticMessageNegativeAck,
             other => Self::Unknown(other),
         }
     }
@@ -55,11 +68,17 @@ impl fmt::Display for DoipPayloadType {
         match self {
             Self::GenericDoipHeaderNegativeAck => write!(f, "GenericNACK"),
             Self::VehicleIdentificationRequest => write!(f, "VehIdentReq"),
+            Self::VehicleIdentificationRequestEid => write!(f, "VehIdentReqEID"),
+            Self::VehicleIdentificationRequestVin => write!(f, "VehIdentReqVIN"),
             Self::VehicleIdentificationResponse => write!(f, "VehIdentResp"),
             Self::RoutingActivationRequest => write!(f, "RoutingActivationReq"),
             Self::RoutingActivationResponse => write!(f, "RoutingActivationResp"),
             Self::AliveCheckRequest => write!(f, "AliveCheckReq"),
             Self::AliveCheckResponse => write!(f, "AliveCheckResp"),
+            Self::EntityStatusRequest => write!(f, "EntityStatusReq"),
+            Self::EntityStatusResponse => write!(f, "EntityStatusResp"),
+            Self::PowerModeInformationRequest => write!(f, "PowerModeReq"),
+            Self::PowerModeInformationResponse => write!(f, "PowerModeResp"),
             Self::DiagnosticMessage => write!(f, "DiagMsg"),
             Self::DiagnosticMessagePositiveAck => write!(f, "DiagPosAck"),
             Self::DiagnosticMessageNegativeAck => write!(f, "DiagNegAck"),
@@ -168,8 +187,8 @@ impl fmt::Display for DoipSomeipFrame {
 
 /// DoIP/SOME-IP frame parser.
 ///
-/// Detection: if the first byte is 0x02 (DoIP protocol version), parse as DoIP.
-/// Otherwise attempt SOME-IP (minimum 16 bytes).
+/// Detection: a DoIP version byte (0x01, 0x02, 0x03 or 0xFF) followed by its
+/// inverse selects DoIP. Anything else is parsed as SOME/IP (minimum 16 bytes).
 #[derive(Clone, Debug, Default)]
 pub struct DoipSomeipParser;
 
@@ -182,14 +201,27 @@ impl DoipSomeipParser {
 impl FrameParser for DoipSomeipParser {
     type Frame = DoipSomeipFrame;
 
+    /// Chooses DoIP or SOME/IP. A DoIP header has version `0x01`, `0x02`, `0x03`
+    /// or `0xFF` followed by its bitwise inverse. If that matches and the DoIP
+    /// parse fails, the bytes are tried as SOME/IP before the DoIP error is
+    /// returned. Raw bytes that fit both formats are inherently ambiguous.
     fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
         if bytes.is_empty() {
             return Err(Error::Parse("DoIP/SOME-IP frame empty".into()));
         }
 
-        if bytes[0] == 0x02 {
-            self.parse_doip(bytes)
-        } else if bytes.len() >= 16 {
+        if looks_like_doip(bytes) {
+            match self.parse_doip(bytes) {
+                Ok(frame) => return Ok(frame),
+                Err(doip_err) => {
+                    return match self.parse_someip(bytes) {
+                        Ok(frame) => Ok(frame),
+                        Err(_) => Err(doip_err),
+                    };
+                }
+            }
+        }
+        if bytes.len() >= 16 {
             self.parse_someip(bytes)
         } else {
             Err(Error::Parse(format!(
@@ -199,6 +231,11 @@ impl FrameParser for DoipSomeipParser {
             )))
         }
     }
+}
+
+/// True when the first two bytes are a DoIP version and its inverse.
+fn looks_like_doip(bytes: &[u8]) -> bool {
+    matches!(bytes, [v, inv, ..] if matches!(*v, 0x01 | 0x02 | 0x03 | 0xFF) && *inv == !*v)
 }
 
 impl DoipSomeipParser {
@@ -212,7 +249,6 @@ impl DoipSomeipParser {
 
         let protocol_version = bytes[0];
         let inverse_version = bytes[1];
-
         if inverse_version != !protocol_version {
             return Err(Error::Parse(format!(
                 "DoIP inverse version mismatch: 0x{inverse_version:02X} != !0x{protocol_version:02X}",
@@ -222,18 +258,30 @@ impl DoipSomeipParser {
         let payload_type = DoipPayloadType::from_u16(u16::from_be_bytes([bytes[2], bytes[3]]));
         let payload_length = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
 
-        let payload_end = 8usize.checked_add(payload_length as usize);
-        let payload = match payload_end {
-            Some(end) if bytes.len() >= end => bytes[8..end].to_vec(),
-            _ => Vec::new(),
-        };
+        // Checked, so a huge length cannot overflow on 32-bit targets. A payload
+        // that is not all present is an error, not an empty payload.
+        let payload_end = 8usize
+            .checked_add(payload_length as usize)
+            .ok_or_else(|| Error::Parse("DoIP payload length overflows".into()))?;
+        if bytes.len() < payload_end {
+            return Err(Error::Parse(format!(
+                "DoIP payload truncated: have {} bytes, need {payload_end}",
+                bytes.len(),
+            )));
+        }
+        if bytes.len() > payload_end {
+            return Err(Error::Parse(format!(
+                "DoIP has {} trailing bytes after the payload",
+                bytes.len() - payload_end,
+            )));
+        }
 
         Ok(DoipSomeipFrame::Doip(DoipFrame {
             protocol_version,
             inverse_version,
             payload_type,
             payload_length,
-            payload,
+            payload: bytes[8..payload_end].to_vec(),
         }))
     }
 
@@ -248,19 +296,31 @@ impl DoipSomeipParser {
         let service_id = u16::from_be_bytes([bytes[0], bytes[1]]);
         let method_id = u16::from_be_bytes([bytes[2], bytes[3]]);
         let length = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+
+        // The length field counts everything after itself: 8 header bytes
+        // (client ID to return code) plus the payload. So it must be at least 8,
+        // and the frame must be exactly 8 + length bytes long.
+        if length < 8 {
+            return Err(Error::Parse(format!(
+                "SOME/IP length {length} is below the minimum of 8"
+            )));
+        }
+        let total = 8usize
+            .checked_add(length as usize)
+            .ok_or_else(|| Error::Parse("SOME/IP length overflows".into()))?;
+        if bytes.len() != total {
+            return Err(Error::Parse(format!(
+                "SOME/IP length says {total} bytes, frame has {}",
+                bytes.len(),
+            )));
+        }
+
         let client_id = u16::from_be_bytes([bytes[8], bytes[9]]);
         let session_id = u16::from_be_bytes([bytes[10], bytes[11]]);
         let protocol_version = bytes[12];
         let interface_version = bytes[13];
         let message_type = SomeipMessageType::from_u8(bytes[14]);
         let return_code = bytes[15];
-
-        let payload_start = 16usize;
-        let payload = if bytes.len() > payload_start {
-            bytes[payload_start..].to_vec()
-        } else {
-            Vec::new()
-        };
 
         Ok(DoipSomeipFrame::Someip(SomeipFrame {
             service_id,
@@ -272,7 +332,7 @@ impl DoipSomeipParser {
             interface_version,
             message_type,
             return_code,
-            payload,
+            payload: bytes[16..].to_vec(),
         }))
     }
 }
@@ -398,7 +458,7 @@ mod tests {
     #[test]
     fn valid_doip_diag_message() {
         let payload = &[0x00, 0x01, 0x02, 0x03];
-        let mut bytes = vec![0x02, 0xFD, 0x00, 0x07];
+        let mut bytes = vec![0x02, 0xFD, 0x80, 0x01];
         let len = payload.len() as u32;
         bytes.extend_from_slice(&len.to_be_bytes());
         bytes.extend_from_slice(payload);
@@ -425,7 +485,8 @@ mod tests {
     #[test]
     fn valid_someip_request() {
         let mut bytes = vec![0x00, 0x01, 0x00, 0x01]; // service=1, method=1
-        bytes.extend_from_slice(&0x00000010u32.to_be_bytes()); // length=16
+                                                      // length = 8 header bytes after this field + 2 payload bytes = 10
+        bytes.extend_from_slice(&0x0000000Au32.to_be_bytes());
         bytes.extend_from_slice(&0x0001u16.to_be_bytes()); // client=1
         bytes.extend_from_slice(&0x0001u16.to_be_bytes()); // session=1
         bytes.push(0x01); // protocol ver
@@ -446,6 +507,97 @@ mod tests {
             }
             _ => panic!("expected SOME/IP frame"),
         }
+    }
+
+    #[test]
+    fn payload_type_table_matches_iso_13400() {
+        assert_eq!(
+            DoipPayloadType::from_u16(0x0004),
+            DoipPayloadType::VehicleIdentificationResponse
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x0005),
+            DoipPayloadType::RoutingActivationRequest
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x0006),
+            DoipPayloadType::RoutingActivationResponse
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x0007),
+            DoipPayloadType::AliveCheckRequest
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x0008),
+            DoipPayloadType::AliveCheckResponse
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x4001),
+            DoipPayloadType::EntityStatusRequest
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x8001),
+            DoipPayloadType::DiagnosticMessage
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x8002),
+            DoipPayloadType::DiagnosticMessagePositiveAck
+        );
+        assert_eq!(
+            DoipPayloadType::from_u16(0x8003),
+            DoipPayloadType::DiagnosticMessageNegativeAck
+        );
+    }
+
+    #[test]
+    fn truncated_doip_payload_is_rejected() {
+        // Header says 4 payload bytes, only 2 are present.
+        let bytes = [0x02, 0xFD, 0x80, 0x01, 0x00, 0x00, 0x00, 0x04, 0xAA, 0xBB];
+        assert!(DoipSomeipParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn doip_trailing_bytes_are_rejected() {
+        let bytes = [0x02, 0xFD, 0x80, 0x01, 0x00, 0x00, 0x00, 0x01, 0xAA, 0xBB];
+        assert!(DoipSomeipParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn doip_discriminator_accepts_v3_and_default_version() {
+        for bytes in [
+            [0x03, 0xFC, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+            [0xFF, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00],
+        ] {
+            let frame = DoipSomeipParser::new().parse(&bytes).unwrap();
+            assert!(matches!(frame, DoipSomeipFrame::Doip(_)), "{bytes:02X?}");
+        }
+    }
+
+    #[test]
+    fn someip_length_must_match_frame() {
+        // Length 16 claims 8 more bytes than the 10 that follow the header.
+        let mut bytes = vec![0x00, 0x01, 0x00, 0x01];
+        bytes.extend_from_slice(&16u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00; 10]);
+        assert!(DoipSomeipParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn someip_length_below_header_is_rejected() {
+        let mut bytes = vec![0x00, 0x01, 0x00, 0x01];
+        bytes.extend_from_slice(&4u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00; 12]);
+        assert!(DoipSomeipParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn someip_is_not_mistaken_for_doip_when_inverse_does_not_match() {
+        // Service 0x0102: byte 1 (0x02) is not the inverse of byte 0 (0x01).
+        let mut bytes = vec![0x01, 0x02, 0x00, 0x01];
+        bytes.extend_from_slice(&8u32.to_be_bytes());
+        bytes.extend_from_slice(&[0x00; 8]);
+        let frame = DoipSomeipParser::new().parse(&bytes).unwrap();
+        assert!(matches!(frame, DoipSomeipFrame::Someip(_)));
     }
 
     #[test]
@@ -513,12 +665,9 @@ mod tests {
         // targets and produce an inverted slice range on 64-bit.
         let mut bytes = vec![0x02, 0xFD, 0x00, 0x07];
         bytes.extend_from_slice(&0xFFFF_FFFFu32.to_be_bytes());
+        // The declared payload is not present, so this must be an error.
         let parser = DoipSomeipParser::new();
-        let frame = parser.parse(&bytes).unwrap();
-        match frame {
-            DoipSomeipFrame::Doip(d) => assert!(d.payload.is_empty()),
-            _ => panic!("expected DoIP frame"),
-        }
+        assert!(parser.parse(&bytes).is_err());
     }
 }
 
