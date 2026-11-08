@@ -11,41 +11,70 @@ use core::fmt;
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
-/// BACnet BVLC function codes (for IP).
+/// BACnet/IP BVLC function codes (ASHRAE 135 Annex J).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum BvlcFunction {
+    BvlcResult,
+    WriteBroadcastDistributionTable,
+    ReadBroadcastDistributionTable,
+    ReadBroadcastDistributionTableAck,
+    ForwardedNpdu,
+    RegisterForeignDevice,
+    ReadForeignDeviceTable,
+    ReadForeignDeviceTableAck,
+    DeleteForeignDeviceTableEntry,
+    DistributeBroadcastToNetwork,
     OriginalUnicastNpdu,
     OriginalBroadcastNpdu,
-    AddressResolutionRequest,
-    AddressResolutionResponse,
-    VirtualLayerResolution,
-    ForwardedNpdu,
     Unknown(u8),
 }
 
 impl BvlcFunction {
     fn from_u8(v: u8) -> Self {
         match v {
-            0x04 => Self::OriginalUnicastNpdu,
-            0x05 => Self::OriginalBroadcastNpdu,
-            0x07 => Self::AddressResolutionRequest,
-            0x08 => Self::AddressResolutionResponse,
-            0x0A => Self::VirtualLayerResolution,
-            0x09 => Self::ForwardedNpdu,
+            0x00 => Self::BvlcResult,
+            0x01 => Self::WriteBroadcastDistributionTable,
+            0x02 => Self::ReadBroadcastDistributionTable,
+            0x03 => Self::ReadBroadcastDistributionTableAck,
+            0x04 => Self::ForwardedNpdu,
+            0x05 => Self::RegisterForeignDevice,
+            0x06 => Self::ReadForeignDeviceTable,
+            0x07 => Self::ReadForeignDeviceTableAck,
+            0x08 => Self::DeleteForeignDeviceTableEntry,
+            0x09 => Self::DistributeBroadcastToNetwork,
+            0x0A => Self::OriginalUnicastNpdu,
+            0x0B => Self::OriginalBroadcastNpdu,
             other => Self::Unknown(other),
         }
+    }
+
+    /// Functions whose body is an NPDU (network layer PDU) and possibly an APDU.
+    fn carries_npdu(&self) -> bool {
+        matches!(
+            self,
+            Self::ForwardedNpdu
+                | Self::DistributeBroadcastToNetwork
+                | Self::OriginalUnicastNpdu
+                | Self::OriginalBroadcastNpdu
+        )
     }
 }
 
 impl fmt::Display for BvlcFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BvlcResult => write!(f, "BVLC-Result"),
+            Self::WriteBroadcastDistributionTable => write!(f, "WriteBDT"),
+            Self::ReadBroadcastDistributionTable => write!(f, "ReadBDT"),
+            Self::ReadBroadcastDistributionTableAck => write!(f, "ReadBDTAck"),
+            Self::ForwardedNpdu => write!(f, "ForwardedNPDU"),
+            Self::RegisterForeignDevice => write!(f, "RegisterForeignDevice"),
+            Self::ReadForeignDeviceTable => write!(f, "ReadFDT"),
+            Self::ReadForeignDeviceTableAck => write!(f, "ReadFDTAck"),
+            Self::DeleteForeignDeviceTableEntry => write!(f, "DeleteFDTEntry"),
+            Self::DistributeBroadcastToNetwork => write!(f, "DistributeBroadcastToNetwork"),
             Self::OriginalUnicastNpdu => write!(f, "UnicastNPDU"),
             Self::OriginalBroadcastNpdu => write!(f, "BroadcastNPDU"),
-            Self::AddressResolutionRequest => write!(f, "AddrResReq"),
-            Self::AddressResolutionResponse => write!(f, "AddrResResp"),
-            Self::VirtualLayerResolution => write!(f, "VirtualLayerRes"),
-            Self::ForwardedNpdu => write!(f, "ForwardedNPDU"),
             Self::Unknown(v) => write!(f, "Unknown(0x{v:02X})"),
         }
     }
@@ -94,22 +123,44 @@ impl fmt::Display for ApduType {
     }
 }
 
-/// BACnet object identifier: type (2 bytes) + instance (4 bytes).
+/// BACnet object identifier: type (10 bits) and instance (22 bits), packed into 32 bits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BacnetObjectId {
     pub object_type: u16,
     pub instance: u32,
 }
 
-/// A parsed BACnet frame (BVLC + APDU).
+impl BacnetObjectId {
+    /// Decodes the packed 32-bit form used by BACnet application data.
+    pub fn from_packed(v: u32) -> Self {
+        Self {
+            object_type: ((v >> 22) & 0x03FF) as u16,
+            instance: v & 0x003F_FFFF,
+        }
+    }
+}
+
+/// ReadProperty service choice (ASHRAE 135 clause 15.5).
+const SERVICE_READ_PROPERTY: u8 = 12;
+/// Who-Is unconfirmed service choice (clause 16.10).
+#[allow(dead_code)]
+const SERVICE_WHO_IS: u8 = 8;
+
+/// A parsed BACnet frame (BVLC, NPDU and APDU).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BacnetFrame {
     pub bvlc_type: u8,
     pub bvlc_function: BvlcFunction,
     pub bvlc_length: u16,
+    /// APDU type, or `Unknown(0)` for network-layer messages and link-only frames.
     pub apdu_type: ApduType,
+    /// Invoke ID for confirmed and acknowledgement APDUs.
+    pub invoke_id: Option<u8>,
+    /// Service choice for APDUs that carry one.
+    pub service_choice: Option<u8>,
     pub object: Option<BacnetObjectId>,
     pub property_id: Option<u16>,
+    /// Remaining service data after the fields above.
     pub payload: Vec<u8>,
 }
 
@@ -133,9 +184,73 @@ impl BacnetParser {
     }
 }
 
+/// Reads one application-tagged or context-tagged value length, returning
+/// `(length, header_bytes)`. Only the context tags used here are supported.
+fn read_context_u32(bytes: &[u8], tag: u8) -> Option<(u32, usize)> {
+    match bytes {
+        [h, a, b, c, d, ..] if *h == (tag << 4) | 0x0C => {
+            Some((u32::from_be_bytes([*a, *b, *c, *d]), 5))
+        }
+        _ => None,
+    }
+}
+
+fn read_context_property(bytes: &[u8], tag: u8) -> Option<(u16, usize)> {
+    match bytes {
+        [h, v, ..] if *h == (tag << 4) | 0x09 => Some((*v as u16, 2)),
+        [h, a, b, ..] if *h == (tag << 4) | 0x0A => Some((u16::from_be_bytes([*a, *b]), 3)),
+        _ => None,
+    }
+}
+
+/// Parses the NPDU at the start of `body`. Returns the offset of the APDU and
+/// whether the NPDU is a network-layer message (which carries no APDU).
+fn parse_npdu(body: &[u8]) -> Result<(usize, bool), Error> {
+    let [version, control, ..] = body else {
+        return Err(Error::Parse("BACnet NPDU too short".into()));
+    };
+    if *version != 0x01 {
+        return Err(Error::Parse(format!(
+            "BACnet NPDU version 0x{version:02X}, expected 0x01"
+        )));
+    }
+    let mut pos = 2usize;
+    let has_dnet = control & 0x20 != 0;
+    let has_snet = control & 0x08 != 0;
+    let network_message = control & 0x80 != 0;
+
+    let skip_address = |present: bool, pos: &mut usize| -> Result<(), Error> {
+        if !present {
+            return Ok(());
+        }
+        // Network number (2) + address length (1) + address.
+        let len = *body
+            .get(*pos + 2)
+            .ok_or_else(|| Error::Parse("BACnet NPDU address truncated".into()))?
+            as usize;
+        *pos += 3 + len;
+        if *pos > body.len() {
+            return Err(Error::Parse("BACnet NPDU address truncated".into()));
+        }
+        Ok(())
+    };
+    skip_address(has_dnet, &mut pos)?;
+    skip_address(has_snet, &mut pos)?;
+    if has_dnet {
+        // Hop count after a destination address.
+        pos += 1;
+    }
+    if pos > body.len() {
+        return Err(Error::Parse("BACnet NPDU header truncated".into()));
+    }
+    Ok((pos, network_message))
+}
+
 impl FrameParser for BacnetParser {
     type Frame = BacnetFrame;
 
+    /// Parses exactly one BACnet/IP frame. The BVLC length must equal the
+    /// number of bytes given.
     fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
         if bytes.len() < 4 {
             return Err(Error::Parse(format!(
@@ -143,75 +258,108 @@ impl FrameParser for BacnetParser {
                 bytes.len(),
             )));
         }
-
-        // BVLC header
-        let bvlc_type = bytes[0];
-        if bvlc_type != 0x81 {
+        let bvlc_length = u16::from_be_bytes([bytes[2], bytes[3]]);
+        if bvlc_length as usize != bytes.len() {
             return Err(Error::Parse(format!(
-                "BACnet invalid BVLC type: 0x{bvlc_type:02X}, expected 0x81",
+                "BACnet BVLC length {bvlc_length} does not match {} bytes",
+                bytes.len(),
             )));
         }
-
-        let bvlc_function = BvlcFunction::from_u8(bytes[1]);
-        let bvlc_length = u16::from_be_bytes([bytes[2], bytes[3]]);
-
-        let apdu_start = 4usize;
-        let payload_available = if bytes.len() > apdu_start {
-            &bytes[apdu_start..]
-        } else {
-            &[]
-        };
-
-        // Parse APDU type from high nibble of first APDU byte
-        let (apdu_type, object, property_id, data) = if payload_available.is_empty() {
-            (ApduType::Unknown(0), None, None, Vec::new())
-        } else {
-            let apdu_nibble = (payload_available[0] >> 4) & 0x0F;
-            let at = ApduType::from_nibble(apdu_nibble);
-
-            let mut obj = None;
-            let mut pid = None;
-            let rest;
-
-            // Try to decode object identifier: typically at offset 1-6
-            if payload_available.len() >= 7 {
-                let obj_type = u16::from_be_bytes([payload_available[1], payload_available[2]]);
-                let instance = u32::from_be_bytes([
-                    payload_available[3],
-                    payload_available[4],
-                    payload_available[5],
-                    payload_available[6],
-                ]);
-                obj = Some(BacnetObjectId {
-                    object_type: obj_type,
-                    instance,
-                });
-                if payload_available.len() >= 9 {
-                    pid = Some(u16::from_be_bytes([
-                        payload_available[7],
-                        payload_available[8],
-                    ]));
-                    rest = payload_available[9..].to_vec();
-                } else {
-                    rest = payload_available[7..].to_vec();
-                }
-            } else {
-                rest = payload_available[1..].to_vec();
-            }
-
-            (at, obj, pid, rest)
-        };
-
-        Ok(BacnetFrame {
-            bvlc_type,
-            bvlc_function,
-            bvlc_length,
-            apdu_type,
-            object,
-            property_id,
-            payload: data,
-        })
+        parse_bvlc(bytes)
     }
+}
+
+fn parse_bvlc(bytes: &[u8]) -> Result<BacnetFrame, Error> {
+    let bvlc_type = bytes[0];
+    if bvlc_type != 0x81 {
+        return Err(Error::Parse(format!(
+            "BACnet invalid BVLC type: 0x{bvlc_type:02X}, expected 0x81",
+        )));
+    }
+    let bvlc_function = BvlcFunction::from_u8(bytes[1]);
+    let bvlc_length = u16::from_be_bytes([bytes[2], bytes[3]]);
+    let mut body = &bytes[4..];
+
+    // Forwarded-NPDU carries the 6-byte original B/IP address first.
+    if bvlc_function == BvlcFunction::ForwardedNpdu {
+        if body.len() < 6 {
+            return Err(Error::Parse("BACnet Forwarded-NPDU missing address".into()));
+        }
+        body = &body[6..];
+    }
+
+    let empty = BacnetFrame {
+        bvlc_type,
+        bvlc_function,
+        bvlc_length,
+        apdu_type: ApduType::Unknown(0),
+        invoke_id: None,
+        service_choice: None,
+        object: None,
+        property_id: None,
+        payload: Vec::new(),
+    };
+    if !bvlc_function.carries_npdu() || body.is_empty() {
+        return Ok(BacnetFrame {
+            payload: body.to_vec(),
+            ..empty
+        });
+    }
+
+    let (apdu_start, network_message) = parse_npdu(body)?;
+    if network_message {
+        return Ok(BacnetFrame {
+            payload: body[apdu_start..].to_vec(),
+            ..empty
+        });
+    }
+    parse_apdu(&body[apdu_start..], empty)
+}
+
+fn parse_apdu(apdu: &[u8], mut frame: BacnetFrame) -> Result<BacnetFrame, Error> {
+    let [first, rest @ ..] = apdu else {
+        return Ok(frame);
+    };
+    let apdu_type = ApduType::from_nibble((first >> 4) & 0x0F);
+    frame.apdu_type = apdu_type;
+    let seg = first & 0x08 != 0;
+
+    // Offsets are relative to `rest`, which starts after the APDU type byte.
+    // Segmented messages insert a sequence number and window size before the
+    // service choice.
+    let (invoke_at, service_at): (Option<usize>, Option<usize>) = match apdu_type {
+        ApduType::ConfirmedRequest => (Some(1), Some(if seg { 4 } else { 2 })),
+        ApduType::ComplexAck => (Some(0), Some(if seg { 3 } else { 1 })),
+        ApduType::SimpleAck | ApduType::Error => (Some(0), Some(1)),
+        ApduType::Abort | ApduType::Reject => (Some(0), None),
+        ApduType::UnconfirmedRequest => (None, Some(0)),
+        ApduType::Unknown(_) => return Ok(frame),
+    };
+    frame.invoke_id = invoke_at.and_then(|i| rest.get(i).copied());
+
+    let Some(service_at) = service_at else {
+        frame.payload = rest.get(1..).unwrap_or(&[]).to_vec();
+        return Ok(frame);
+    };
+    let Some(&service) = rest.get(service_at) else {
+        return Ok(frame);
+    };
+    frame.service_choice = Some(service);
+    let data = &rest[service_at + 1..];
+
+    if service == SERVICE_READ_PROPERTY && matches!(apdu_type, ApduType::ConfirmedRequest) && !seg {
+        if let Some((packed, used)) = read_context_u32(data, 0) {
+            frame.object = Some(BacnetObjectId::from_packed(packed));
+            let after_object = &data[used..];
+            if let Some((property, used2)) = read_context_property(after_object, 1) {
+                frame.property_id = Some(property);
+                frame.payload = after_object[used2..].to_vec();
+                return Ok(frame);
+            }
+        }
+    }
+    frame.payload = data.to_vec();
+    Ok(frame)
 }
 
 /// BACnet connection state.
@@ -277,13 +425,11 @@ impl DataNormalizer for BacnetNormalizer {
             format!("apdu:{}", frame.apdu_type)
         };
         let timestamp = 0;
-
         let value = if !frame.payload.is_empty() {
             TupValue::Bytes(frame.payload.clone())
         } else {
             TupValue::Int(0)
         };
-
         Ok(DataPoint::new(
             SourceProtocol::Bacnet,
             device_id,
@@ -298,108 +444,172 @@ impl DataNormalizer for BacnetNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
-    fn make_bacnet_frame(func: u8, apdu_nibble: u8, obj_type: u16, instance: u32) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.push(0x81); // BVLC type
-        buf.push(func);
-        // length placeholder
-        buf.extend_from_slice(&0x0000u16.to_be_bytes());
-        // APDU
-        buf.push(apdu_nibble << 4);
-        buf.extend_from_slice(&obj_type.to_be_bytes());
-        buf.extend_from_slice(&instance.to_be_bytes());
-        // Set actual length
-        let len = buf.len() as u16;
-        buf[2] = (len >> 8) as u8;
-        buf[3] = (len & 0xFF) as u8;
-        buf
+    /// Builds a BACnet/IP frame: BVLC header with a correct length, then `body`.
+    fn bvlc(function: u8, body: &[u8]) -> Vec<u8> {
+        let len = (4 + body.len()) as u16;
+        let mut out = vec![0x81, function];
+        out.extend_from_slice(&len.to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// Confirmed ReadProperty request for `object` (packed), property 85 (Present_Value).
+    fn read_property_body(packed_object: u32, invoke: u8) -> Vec<u8> {
+        let mut body = vec![0x01, 0x00]; // NPDU: version 1, no addresses, normal priority
+        body.extend_from_slice(&[0x00, 0x05, invoke, SERVICE_READ_PROPERTY]); // APDU
+        body.push(0x0C); // context tag 0, length 4: object identifier
+        body.extend_from_slice(&packed_object.to_be_bytes());
+        body.extend_from_slice(&[0x19, 85]); // context tag 1, length 1: property identifier
+        body
     }
 
     #[test]
-    fn valid_parse_unconfirmed_request() {
-        let bytes = make_bacnet_frame(0x05, 1, 0, 12345);
-        let parser = BacnetParser::new();
-        let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.bvlc_type, 0x81);
+    fn bvlc_function_codes_follow_annex_j() {
+        assert_eq!(BvlcFunction::from_u8(0x04), BvlcFunction::ForwardedNpdu);
+        assert_eq!(
+            BvlcFunction::from_u8(0x05),
+            BvlcFunction::RegisterForeignDevice
+        );
+        assert_eq!(
+            BvlcFunction::from_u8(0x0A),
+            BvlcFunction::OriginalUnicastNpdu
+        );
+        assert_eq!(
+            BvlcFunction::from_u8(0x0B),
+            BvlcFunction::OriginalBroadcastNpdu
+        );
+        assert_eq!(
+            BvlcFunction::from_u8(0x09),
+            BvlcFunction::DistributeBroadcastToNetwork
+        );
+    }
+
+    #[test]
+    fn read_property_request_decodes_packed_object_id() {
+        // Analog Input (type 0) instance 12345 packs to 0x00003039.
+        let frame = BacnetParser::new()
+            .parse(&bvlc(0x0A, &read_property_body(0x0000_3039, 7)))
+            .unwrap();
+        assert_eq!(frame.apdu_type, ApduType::ConfirmedRequest);
+        assert_eq!(frame.invoke_id, Some(7));
+        assert_eq!(frame.service_choice, Some(SERVICE_READ_PROPERTY));
+        let obj = frame.object.unwrap();
+        assert_eq!((obj.object_type, obj.instance), (0, 12345));
+        assert_eq!(frame.property_id, Some(85));
+    }
+
+    #[test]
+    fn packed_object_id_splits_type_and_instance() {
+        // Analog Value (type 2) instance 7 packs to (2 << 22) | 7 = 0x0080_0007.
+        let obj = BacnetObjectId::from_packed(0x0080_0007);
+        assert_eq!((obj.object_type, obj.instance), (2, 7));
+    }
+
+    #[test]
+    fn who_is_broadcast_with_destination_network() {
+        // NPDU control 0x20: destination network present, with DNET 0xFFFF, no DLEN, hop 255.
+        let body = [0x01, 0x20, 0xFF, 0xFF, 0x00, 0xFF, 0x10, 0x08];
+        let frame = BacnetParser::new().parse(&bvlc(0x0B, &body)).unwrap();
         assert_eq!(frame.bvlc_function, BvlcFunction::OriginalBroadcastNpdu);
         assert_eq!(frame.apdu_type, ApduType::UnconfirmedRequest);
-        assert_eq!(frame.object.as_ref().unwrap().instance, 12345);
+        assert_eq!(frame.service_choice, Some(SERVICE_WHO_IS));
     }
 
     #[test]
-    fn valid_parse_confirmed_request() {
-        let bytes = make_bacnet_frame(0x04, 0, 0, 999);
-        let parser = BacnetParser::new();
-        let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.bvlc_function, BvlcFunction::OriginalUnicastNpdu);
-        assert_eq!(frame.apdu_type, ApduType::ConfirmedRequest);
-        assert_eq!(frame.object.as_ref().unwrap().instance, 999);
+    fn forwarded_npdu_skips_original_address() {
+        // 6-byte original B/IP address (192.168.1.10:47808), then NPDU and a Complex-ACK.
+        let mut body = vec![192, 168, 1, 10, 0xBA, 0xC0];
+        body.extend_from_slice(&[0x01, 0x00, 0x30, 0x01, SERVICE_READ_PROPERTY]);
+        let frame = BacnetParser::new().parse(&bvlc(0x04, &body)).unwrap();
+        assert_eq!(frame.bvlc_function, BvlcFunction::ForwardedNpdu);
+        assert_eq!(frame.apdu_type, ApduType::ComplexAck);
+        assert_eq!(frame.invoke_id, Some(1));
+        assert_eq!(frame.service_choice, Some(SERVICE_READ_PROPERTY));
+    }
+
+    #[test]
+    fn network_layer_message_has_no_apdu() {
+        let frame = BacnetParser::new()
+            .parse(&bvlc(0x0A, &[0x01, 0x80, 0x00]))
+            .unwrap();
+        assert_eq!(frame.apdu_type, ApduType::Unknown(0));
+        assert_eq!(frame.payload, vec![0x00]);
+    }
+
+    #[test]
+    fn bvlc_length_must_match_the_frame() {
+        let mut bytes = bvlc(0x0A, &read_property_body(0x0000_3039, 1));
+        bytes.push(0x00); // extra byte, length field unchanged
+        assert!(BacnetParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn npdu_version_must_be_one() {
+        assert!(BacnetParser::new()
+            .parse(&bvlc(0x0A, &[0x02, 0x00, 0x10, 0x08]))
+            .is_err());
     }
 
     #[test]
     fn invalid_bvlc_type() {
-        let mut bytes = make_bacnet_frame(0x05, 1, 0, 0);
+        let mut bytes = bvlc(0x0A, &read_property_body(0x0000_3039, 1));
         bytes[0] = 0x82;
-        let parser = BacnetParser::new();
-        let result = parser.parse(&bytes);
-        assert!(result.is_err());
+        assert!(BacnetParser::new().parse(&bytes).is_err());
     }
 
     #[test]
     fn truncated_input() {
-        let parser = BacnetParser::new();
-        let result = parser.parse(&[0x81, 0x04]);
-        assert!(result.is_err());
+        assert!(BacnetParser::new().parse(&[0x81, 0x04]).is_err());
     }
 
     #[test]
-    fn garbage_input() {
-        let parser = BacnetParser::new();
-        let result = parser.parse(&[0x81, 0xFF, 0x00, 0x04, 0xFE]);
-        assert!(result.is_ok());
+    fn garbage_input_is_rejected() {
+        // Length says 4 but five bytes are present.
+        assert!(BacnetParser::new()
+            .parse(&[0x81, 0xFF, 0x00, 0x04, 0xFE])
+            .is_err());
     }
 
     #[test]
-    fn normalize_roundtrip() {
-        let parser = BacnetParser::new();
-        let normalizer = BacnetNormalizer::new();
-        let bytes = make_bacnet_frame(0x04, 0, 0x01, 42);
-        let frame = parser.parse(&bytes).unwrap();
-        let dp = normalizer.normalize(&frame).unwrap();
+    fn normalize_read_property_uses_object_point_id() {
+        let frame = BacnetParser::new()
+            .parse(&bvlc(0x0A, &read_property_body(0x0040_002A, 1)))
+            .unwrap();
+        let dp = BacnetNormalizer::new().normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Bacnet);
+        // Type 1 (binary output), instance 42.
         assert_eq!(dp.point_id, "obj:1:42");
     }
 
     #[test]
     fn validator_ok() {
-        let validator = BacnetValidator::new();
         let state = BacnetState {
             connected: true,
             device_instance: 100,
             last_ok_timestamp: 1000,
             error_count: 0,
         };
-        assert!(validator.validate(&state).is_ok());
+        assert!(BacnetValidator::new().validate(&state).is_ok());
     }
 
     #[test]
     fn validator_not_connected() {
-        let validator = BacnetValidator::new();
-        let state = BacnetState::default();
-        assert!(validator.validate(&state).is_err());
+        assert!(BacnetValidator::new()
+            .validate(&BacnetState::default())
+            .is_err());
     }
 
     #[test]
     fn validator_bad_instance() {
-        let validator = BacnetValidator::new();
         let state = BacnetState {
             connected: true,
             device_instance: 5_000_000,
             last_ok_timestamp: 1000,
             error_count: 0,
         };
-        assert!(validator.validate(&state).is_err());
+        assert!(BacnetValidator::new().validate(&state).is_err());
     }
 }
 
