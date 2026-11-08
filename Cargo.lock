@@ -1191,6 +1191,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
 
 [[package]]
+name = "convert_case"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1465,7 +1474,7 @@ checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
 dependencies = [
  "bitflags 2.13.1",
  "crossterm_winapi",
- "derive_more",
+ "derive_more 2.1.1",
  "document-features",
  "mio",
  "parking_lot",
@@ -1681,7 +1690,7 @@ version = "0.99.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
 dependencies = [
- "convert_case",
+ "convert_case 0.4.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -1703,6 +1712,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -1965,15 +1975,15 @@ checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 
 [[package]]
 name = "embedded-io"
-version = "0.6.1"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
 name = "embedded-io-async"
-version = "0.6.1"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ff09972d4073aa8c299395be75161d582e7629cd663171d62af73c8d50dba3f"
+checksum = "2564b9f813c544241430e147d8bc454815ef9ac998878d30cc3055449f7fd4c0"
 dependencies = [
  "embedded-io",
 ]
@@ -4149,9 +4159,9 @@ dependencies = [
 
 [[package]]
 name = "mavlink"
-version = "0.15.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4aa992712b679053eb43a75e9883d9c71600bbc25a95fdb3d819ebc6cd73cf6"
+checksum = "0df4c9e6c5f14b13459638df2dd35efdc4743b327621d5bfe7801bb850326f44"
 dependencies = [
  "bitflags 2.13.1",
  "mavlink-bindgen",
@@ -4162,23 +4172,23 @@ dependencies = [
 
 [[package]]
 name = "mavlink-bindgen"
-version = "0.15.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efb11c48b3cd7faa1c378f127a74c480a4d0f7a464c44fedf8350fb861d60059"
+checksum = "2052217619766a23bd0181e7ddee6c4661fac7e5179f75c8f802fec551278304"
 dependencies = [
  "crc-any",
- "lazy_static",
  "proc-macro2",
- "quick-xml 0.37.5",
+ "quick-xml 0.39.4",
  "quote",
+ "regex",
  "thiserror 2.0.21",
 ]
 
 [[package]]
 name = "mavlink-core"
-version = "0.15.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65b4c195c657fa0637dcbaac4b1a179a91ebd7b6a370e386c9f312cc2e6adc95"
+checksum = "c9e8f00fd8c85980548571d28ead126f320733bbe27684aa02f1787060d3264d"
 dependencies = [
  "byteorder",
  "crc-any",
@@ -5479,9 +5489,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.37.5"
+version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "331e97a1af0bf59823e6eadffe373d7b27f485be8748f71471c662c1f269b7fb"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr",
 ]
