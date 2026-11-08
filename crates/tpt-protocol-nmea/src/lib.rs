@@ -15,7 +15,16 @@ use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 /// NMEA 0183 talker identifier.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Talker {
+    /// GPS.
     Gp,
+    /// Multi-constellation GNSS.
+    Gn,
+    /// GLONASS.
+    Gl,
+    /// Galileo.
+    Ga,
+    /// BeiDou.
+    Bd,
     Sd,
     Gi,
     He,
@@ -33,6 +42,10 @@ impl Talker {
         }
         match (b[0], b[1]) {
             (b'G', b'P') => Self::Gp,
+            (b'G', b'N') => Self::Gn,
+            (b'G', b'L') => Self::Gl,
+            (b'G', b'A') => Self::Ga,
+            (b'B', b'D') => Self::Bd,
             (b'S', b'D') => Self::Sd,
             (b'G', b'I') => Self::Gi,
             (b'H', b'E') => Self::He,
@@ -44,6 +57,10 @@ impl Talker {
     fn as_str(&self) -> &'static str {
         match self {
             Self::Gp => "GP",
+            Self::Gn => "GN",
+            Self::Gl => "GL",
+            Self::Ga => "GA",
+            Self::Bd => "BD",
             Self::Sd => "SD",
             Self::Gi => "GI",
             Self::He => "HE",
@@ -154,6 +171,7 @@ impl FrameParser for NmeaParser {
 
         let s = core::str::from_utf8(bytes)
             .map_err(|_| Error::Parse("NMEA: not valid UTF-8".into()))?;
+        // Trim first, so the checksum range starts at the '$' we just found.
         let s = s.trim();
 
         if !s.starts_with('$') {
@@ -170,9 +188,14 @@ impl FrameParser for NmeaParser {
         let expected_csum = u8::from_str_radix(csum_str, 16)
             .map_err(|_| Error::Parse("NMEA: invalid checksum hex".into()))?;
 
-        let computed_csum = compute_nmea_checksum(&bytes[1..csum_star]);
-
-        let checksum_valid = computed_csum == expected_csum;
+        let computed_csum = compute_nmea_checksum(&s.as_bytes()[1..csum_star]);
+        if computed_csum != expected_csum {
+            return Err(Error::Parse(format!(
+                "NMEA checksum mismatch: computed 0x{computed_csum:02X}, got 0x{expected_csum:02X}"
+            )));
+        }
+        // Mismatches are rejected above, so every parsed frame has a valid checksum.
+        let checksum_valid = true;
 
         // Split body into talker+sentence and fields
         let talker_part = body.get(..2).unwrap_or("");
@@ -398,9 +421,34 @@ mod tests {
             modified[len - 4] = b'0';
             modified[len - 3] = b'0';
         }
-        let parser = NmeaParser::new();
-        let frame = parser.parse(&modified).unwrap();
-        assert!(!frame.checksum_valid);
+        // A checksum that does not match is an error, not a Bad-quality frame.
+        assert!(NmeaParser::new().parse(&modified).is_err());
+    }
+
+    #[test]
+    fn checksum_covers_the_sentence_after_leading_whitespace() {
+        // Leading whitespace must not shift the checksum range off the '$'.
+        let bytes = make_nmea("GP", "GGA", &["1", "2"]);
+        let mut padded = alloc::vec![b' ', b' '];
+        padded.extend_from_slice(&bytes);
+        let frame = NmeaParser::new().parse(&padded).unwrap();
+        assert!(frame.checksum_valid);
+        assert_eq!(frame.talker, Talker::Gp);
+    }
+
+    #[test]
+    fn multi_constellation_talkers_are_recognized() {
+        for (code, expected) in [
+            ("GN", Talker::Gn),
+            ("GL", Talker::Gl),
+            ("GA", Talker::Ga),
+            ("BD", Talker::Bd),
+        ] {
+            let frame = NmeaParser::new()
+                .parse(&make_nmea(code, "GGA", &["1"]))
+                .unwrap();
+            assert_eq!(frame.talker, expected, "{code}");
+        }
     }
 
     #[test]
