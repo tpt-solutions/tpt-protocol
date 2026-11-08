@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **OPC UA:** Binary encoding is little-endian. `message_size` must equal the frame length. The MSG TypeId
+  NodeId and ExtensionObject body are decoded. `OpcuaFrame::node_id` is replaced by `type_namespace`.
 - **EtherCAT:** command codes follow IEC 61158 (APWR=2, FPWR=5, BWR=8, LRD=10, LWR=11 were wrong). The
   header is little-endian with an 11-bit length. `EthercatFrame` now holds a `datagrams` list.
 - **NMEA:** a checksum mismatch is a parse error. The checksum range is correct with leading whitespace.
