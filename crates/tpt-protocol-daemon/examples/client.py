@@ -12,8 +12,14 @@ import websocket  # pip install websocket-client
 
 
 def on_message(ws, message):
-    # The daemon sends a JSON array of DataPoints per tick.
-    for dp in json.loads(message):
+    payload = json.loads(message)
+    if isinstance(payload, dict):
+        # {"type": "lagged", "dropped": n}: this client fell behind the stream.
+        if payload.get("type") == "lagged":
+            print(f"warning: daemon dropped {payload.get('dropped')} messages")
+        return
+    # Otherwise the daemon sends a JSON array of DataPoints per tick.
+    for dp in payload:
         print(
             f"{dp['source_protocol']:>12} {dp['device_id']:<16} "
             f"{dp['point_id']:<16} {dp['value']!s:<10} {dp['quality']}"

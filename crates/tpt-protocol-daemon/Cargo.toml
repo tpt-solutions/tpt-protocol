@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "tpt-protocol-daemon"
 version = "0.1.0"
 description = "TPT Protocol background service — transports, protocol plugins, and local API"

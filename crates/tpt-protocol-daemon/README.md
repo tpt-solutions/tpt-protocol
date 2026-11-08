@@ -15,9 +15,13 @@ perform real hardware I/O (see [_Known gaps_](#known-gaps) below).
   is **no real transport** (Serial/CAN/TCP/UDP) — genuine hardware I/O is
   future work (see the workspace `TODO.md`, Later/Deferred section, and the
   root `CHANGELOG.md`).
-- **Security posture:** the WebSocket API has no authentication and is bound
-  to loopback (`127.0.0.1`) by default. Binding to a non-loopback address
-  prints a warning but is not refused.
+- **Security posture:** the WebSocket API is bound to loopback (`127.0.0.1`)
+  by default. On a loopback bind, the handshake rejects any `Host` header that
+  is not a loopback name (DNS-rebinding defence) and any browser `Origin` that
+  is not allowed (Tauri webview origins are always allowed; add others with
+  `--allow-origin`). Setting `--token` additionally requires a token. A
+  non-loopback bind prints a warning, disables the `Host` check, and is not
+  refused.
 
 ## Usage
 
@@ -31,8 +35,13 @@ cargo run --bin tpt-protocol-daemon -- --simulate modbus
 # Run with custom port
 cargo run --bin tpt-protocol-daemon -- --port 9090 --simulate modbus
 
-# Replay raw bytes (hex or raw file) through a protocol's parser/normalizer
+# Replay bytes through a protocol's parser/normalizer. The file is ASCII hex
+# by default; pass --replay-format raw for binary captures.
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
+cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay capture.bin --replay-format raw
+
+# Require a token (as ?token= or Authorization: Bearer) and allow a dev-server origin
+cargo run --bin tpt-protocol-daemon -- --simulate modbus --token "$TOKEN" --allow-origin http://localhost:5173
 
 # Run with TOML config
 cargo run --bin tpt-protocol-daemon -- --config daemon.example.toml
@@ -113,7 +122,7 @@ data to all connected clients via a `tokio::sync::broadcast` channel.
 
 - **Endpoint:** `ws://127.0.0.1:9080/`
 - **Messages:** a JSON array (one element per tick) of `tpt_protocol_tup::DataPoint`
-  objects, serialized by the daemon's `datapoint_to_json` helper. Each object
+  objects, serialized with `tpt_protocol_tup::json::to_json_string`. Each object
   has the fields `schema_version`, `source_protocol`, `device_id`, `point_id`,
   `timestamp`, `value`, `quality`, and an optional `unit`. Example:
 
@@ -123,8 +132,13 @@ data to all connected clients via a `tokio::sync::broadcast` channel.
     "quality":"good"}]
   ```
 
-- The server warns (does not refuse) when `--bind` is not a loopback address,
-  since the API has no authentication.
+- **Control messages:** a client that falls behind the broadcast channel is
+  sent `{"type":"lagged","dropped":n}` instead of an array, so clients must
+  check for a non-array message before iterating. The server answers WebSocket
+  `Ping` frames and stops on `Close`.
+- **Limits:** handshakes must complete within 5 seconds, at most 64 clients are
+  served at once, and incoming messages are capped at 64 KiB.
+- The server warns (does not refuse) when `--bind` is not a loopback address.
 
 ### Configuration (`daemon.example.toml`)
 
@@ -137,13 +151,13 @@ simulate = "modbus"
 # WebSocket API port.
 port = 9080
 
-# Bind address. Loopback only by default — the API has no authentication.
-# A non-loopback bind prints a warning.
+# Bind address. Loopback only by default. A non-loopback bind prints a warning.
 bind = "127.0.0.1"
 ```
 
-CLI flags override config-file values (`--simulate` and `--port`/`--bind`);
-the config file supplies defaults when flags are absent.
+Unknown keys are rejected. CLI flags override config-file values
+(`--simulate`, `--port`, `--bind`); the config file supplies defaults when
+flags are absent.
 
 ## Running it (clients)
 

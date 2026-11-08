@@ -1,18 +1,39 @@
 mod plugins;
 
+use std::net::IpAddr;
 use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{anyhow, bail, Result};
 use clap::Parser;
 use futures_util::stream::{Stream, StreamExt};
 use futures_util::SinkExt;
 use serde::Deserialize;
-use tokio::net::TcpListener;
-use tokio::sync::broadcast;
-use tokio_tungstenite::accept_async;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
+use tokio_tungstenite::accept_hdr_async_with_config;
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
-use tpt_protocol_tup::{DataPoint, TupValue};
+use tpt_protocol_tup::{json, DataPoint};
+
+const DEFAULT_PORT: u16 = 9080;
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CLIENTS: usize = 64;
+const MAX_INCOMING_MESSAGE: usize = 64 * 1024;
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// Origins a Tauri webview uses to load its frontend. Browsers always send an
+/// `Origin` header on WebSocket handshakes, so this is what lets `ui-web`
+/// connect while still rejecting arbitrary web pages.
+const TAURI_ORIGINS: [&str; 3] = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+];
 
 #[derive(Parser)]
 #[command(name = "tpt-protocol-daemon", version = "0.1.0")]
@@ -20,128 +41,307 @@ struct Args {
     /// Simulate this protocol instead of a real device. See `--list-protocols`.
     #[arg(long)]
     simulate: Option<String>,
+    /// TOML config file. CLI flags take precedence over values in the file.
     #[arg(long)]
     config: Option<String>,
-    #[arg(long, default_value = "9080")]
-    port: u16,
-    #[arg(long, default_value = "127.0.0.1")]
-    bind: String,
+    /// Port to listen on (default 9080).
+    #[arg(long)]
+    port: Option<u16>,
+    /// Address to bind (default 127.0.0.1).
+    #[arg(long)]
+    bind: Option<String>,
     /// Print the list of supported protocols and exit.
     #[arg(long)]
     list_protocols: bool,
-    /// Replay raw bytes from a file through the chosen protocol's parser instead
-    /// of running the synthetic simulation. Hex strings are decoded; otherwise
-    /// the file is read as raw bytes.
+    /// Replay bytes from a file through the protocol chosen by `--simulate`
+    /// instead of running the synthetic simulation.
     #[arg(long)]
     replay: Option<String>,
+    /// How `--replay` interprets the file: `hex` (ASCII hex text) or `raw` (binary).
+    #[arg(long, default_value = "hex", value_parser = ["hex", "raw"])]
+    replay_format: String,
+    /// Require this token on WebSocket connections, as `?token=` or `Authorization: Bearer`.
+    #[arg(long)]
+    token: Option<String>,
+    /// Additional browser Origin allowed to connect (repeatable), e.g. a dev server.
+    #[arg(long = "allow-origin")]
+    allow_origin: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct Config {
     simulate: Option<String>,
-    #[serde(default = "default_port")]
-    port: u16,
-    #[serde(default = "default_bind")]
+    port: Option<u16>,
+    bind: Option<String>,
+}
+
+#[derive(Debug, PartialEq)]
+struct Settings {
+    simulate: Option<String>,
     bind: String,
+    port: u16,
 }
 
-fn default_port() -> u16 {
-    9080
+/// CLI flags win over the config file, which wins over built-in defaults.
+fn resolve_settings(
+    cli_simulate: Option<String>,
+    cli_port: Option<u16>,
+    cli_bind: Option<String>,
+    file: Config,
+) -> Settings {
+    Settings {
+        simulate: cli_simulate.or(file.simulate),
+        bind: cli_bind
+            .or(file.bind)
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+        port: cli_port.or(file.port).unwrap_or(DEFAULT_PORT),
+    }
 }
 
-fn default_bind() -> String {
-    "127.0.0.1".to_string()
+/// Access rules applied to every WebSocket handshake.
+struct WsPolicy {
+    token: Option<String>,
+    /// Normalized (lowercase, no trailing slash) allowed `Origin` values.
+    allowed_origins: Vec<String>,
+    /// Only enforced when bound to loopback: DNS-rebinding defence.
+    check_host: bool,
 }
 
-fn datapoint_to_json(dp: &DataPoint) -> Result<String, serde_json::Error> {
-    let value = match &dp.value {
-        TupValue::Int(v) => serde_json::json!(v),
-        TupValue::Float(v) => serde_json::json!(v),
-        TupValue::Bool(v) => serde_json::json!(v),
-        TupValue::Text(v) => serde_json::json!(v),
-        TupValue::Bytes(v) => serde_json::Value::String(format!("<{} bytes>", v.len())),
+fn normalize_origin(origin: &str) -> String {
+    origin.trim().trim_end_matches('/').to_ascii_lowercase()
+}
+
+/// Splits a `Host` header value into `(name, port)`, handling `[v6]:port`.
+fn split_host(host: &str) -> (&str, Option<&str>) {
+    if let Some(rest) = host.strip_prefix('[') {
+        return match rest.split_once(']') {
+            Some((inner, after)) => (inner, after.strip_prefix(':')),
+            None => (host, None),
+        };
+    }
+    match host.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') => (name, Some(port)),
+        _ => (host, None),
+    }
+}
+
+fn is_loopback_name(name: &str) -> bool {
+    let name = name.trim_end_matches('.');
+    if name.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    name.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Returns true if `bind` is a loopback address (`localhost`, `127.x.x.x`,
+/// `::1`, bracketed or not). We warn rather than refuse otherwise, since the
+/// WebSocket API is only as protected as the network it is exposed on.
+fn is_loopback_bind(bind: &str) -> bool {
+    is_loopback_name(bind.trim_start_matches('[').trim_end_matches(']'))
+}
+
+fn host_header_is_loopback(host: &str) -> bool {
+    let (name, _port) = split_host(host);
+    is_loopback_name(name)
+}
+
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+fn token_matches(req: &Request, expected: &str) -> bool {
+    let from_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::trim);
+    let from_query = req
+        .uri()
+        .query()
+        .and_then(|q| q.split('&').find_map(|kv| kv.strip_prefix("token=")));
+    [from_header, from_query]
+        .into_iter()
+        .flatten()
+        .any(|candidate| ct_eq(candidate.as_bytes(), expected.as_bytes()))
+}
+
+fn authorize(req: &Request, policy: &WsPolicy) -> Result<(), (StatusCode, &'static str)> {
+    if policy.check_host {
+        let host = req
+            .headers()
+            .get("host")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !host_header_is_loopback(host) {
+            return Err((StatusCode::FORBIDDEN, "host not allowed"));
+        }
+    }
+    if let Some(origin) = req.headers().get("origin") {
+        let origin = origin.to_str().map(normalize_origin).unwrap_or_default();
+        if !policy.allowed_origins.contains(&origin) {
+            return Err((StatusCode::FORBIDDEN, "origin not allowed"));
+        }
+    }
+    if let Some(expected) = &policy.token {
+        if !token_matches(req, expected) {
+            return Err((StatusCode::UNAUTHORIZED, "missing or invalid token"));
+        }
+    }
+    Ok(())
+}
+
+/// Handshake callback. Rejections are HTTP responses, as tungstenite requires,
+/// so the large `Err` type is fixed by the `Callback` trait.
+#[allow(clippy::result_large_err)]
+fn on_handshake(
+    req: &Request,
+    resp: Response,
+    policy: &WsPolicy,
+) -> Result<Response, ErrorResponse> {
+    match authorize(req, policy) {
+        Ok(()) => Ok(resp),
+        Err((status, reason)) => {
+            eprintln!("rejected WebSocket handshake ({status}): {reason}");
+            let mut rejection = ErrorResponse::new(Some(reason.to_string()));
+            *rejection.status_mut() = status;
+            Err(rejection)
+        }
+    }
+}
+
+/// Decodes a hex replay file. Whitespace is ignored and an optional `0x`
+/// prefix is accepted. Binary input is rejected with a pointer to `raw` mode.
+fn decode_hex_file(raw: &[u8]) -> Result<Vec<u8>> {
+    let text = std::str::from_utf8(raw).map_err(|_| {
+        anyhow!("replay file is not ASCII hex text; use --replay-format raw for binary captures")
+    })?;
+    let trimmed = text.trim();
+    let trimmed = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    let compact: String = trimmed.split_whitespace().collect();
+    hex::decode(&compact).map_err(|e| {
+        anyhow!("invalid hex in replay file: {e} (use --replay-format raw for binary captures)")
+    })
+}
+
+async fn handle_connection(
+    stream: TcpStream,
+    tx: broadcast::Sender<DataPoint>,
+    policy: Arc<WsPolicy>,
+    _permit: OwnedSemaphorePermit,
+) {
+    #[allow(clippy::result_large_err)] // same tungstenite-imposed type as `on_handshake`
+    let callback = move |req: &Request, resp: Response| on_handshake(req, resp, &policy);
+
+    let config = WebSocketConfig {
+        max_message_size: Some(MAX_INCOMING_MESSAGE),
+        max_frame_size: Some(MAX_INCOMING_MESSAGE),
+        ..Default::default()
     };
 
-    let mut obj = serde_json::json!({
-        "schema_version": dp.schema_version(),
-        "source_protocol": dp.source_protocol.as_str(),
-        "device_id": dp.device_id,
-        "point_id": dp.point_id,
-        "timestamp": dp.timestamp,
-        "value": value,
-        "quality": dp.quality.as_str(),
-    });
-
-    if let Some(ref unit) = dp.unit {
-        obj["unit"] = serde_json::json!(unit);
-    }
-
-    serde_json::to_string(&obj)
-}
-
-async fn handle_connection(stream: tokio::net::TcpStream, tx: broadcast::Sender<DataPoint>) {
-    let ws_stream = match accept_async(stream).await {
-        Ok(s) => s,
-        Err(e) => {
+    let ws_stream = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        accept_hdr_async_with_config(stream, callback, Some(config)),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             eprintln!("WebSocket handshake error: {e}");
+            return;
+        }
+        Err(_) => {
+            eprintln!("WebSocket handshake timed out");
             return;
         }
     };
 
-    let (mut write, _read) = ws_stream.split();
+    let (mut write, mut read) = ws_stream.split();
     let mut rx = tx.subscribe();
 
     loop {
-        match rx.recv().await {
-            Ok(dp) => {
-                let json = match datapoint_to_json(&dp) {
-                    Ok(j) => j,
-                    Err(e) => {
-                        eprintln!("JSON serialization error: {e}");
-                        continue;
+        tokio::select! {
+            incoming = read.next() => match incoming {
+                Some(Ok(Message::Ping(payload))) => {
+                    if write.send(Message::Pong(payload)).await.is_err() {
+                        break;
                     }
-                };
-                let msg = format!("[{}]", json);
-                if write.send(Message::Text(msg)).await.is_err() {
+                }
+                // Clients have nothing to say; ignore text, binary and pong frames.
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Ok(_)) => {}
+                Some(Err(e)) => {
+                    eprintln!("WebSocket read error: {e}");
                     break;
                 }
-            }
-            Err(broadcast::error::RecvError::Lagged(n)) => {
-                eprintln!("client lagged by {n} messages");
-                continue;
-            }
-            Err(broadcast::error::RecvError::Closed) => break,
+            },
+            outgoing = rx.recv() => match outgoing {
+                Ok(dp) => {
+                    let json = match json::to_json_string(&dp) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            eprintln!("JSON serialization error: {e}");
+                            continue;
+                        }
+                    };
+                    if write.send(Message::Text(format!("[{json}]"))).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    // Tell the client its stream has a gap. This is a JSON object,
+                    // not an array, so clients must check for `"type":"lagged"`.
+                    let notice = format!(r#"{{"type":"lagged","dropped":{dropped}}}"#);
+                    if write.send(Message::Text(notice)).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
         }
     }
 }
 
-async fn ws_server(bind: &str, port: u16, tx: broadcast::Sender<DataPoint>) -> Result<()> {
-    let addr = format!("{}:{}", bind, port);
-    let listener = TcpListener::bind(&addr).await?;
+async fn ws_server(
+    bind: &str,
+    port: u16,
+    tx: broadcast::Sender<DataPoint>,
+    policy: Arc<WsPolicy>,
+) -> Result<()> {
+    let listener = TcpListener::bind((bind, port)).await?;
+    let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
 
-    while let Ok((stream, _peer)) = listener.accept().await {
+    loop {
+        let (stream, peer) = match listener.accept().await {
+            Ok(accepted) => accepted,
+            Err(e) => {
+                eprintln!("accept error: {e}");
+                tokio::time::sleep(ACCEPT_BACKOFF).await;
+                continue;
+            }
+        };
+
+        let permit = match Arc::clone(&slots).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                eprintln!("rejecting {peer}: connection limit ({MAX_CLIENTS}) reached");
+                continue;
+            }
+        };
+
         let tx = tx.clone();
+        let policy = Arc::clone(&policy);
         tokio::spawn(async move {
-            handle_connection(stream, tx).await;
+            handle_connection(stream, tx, policy, permit).await;
         });
     }
-
-    Ok(())
-}
-
-/// Returns true if `bind` resolves to a loopback address. We warn (rather than
-/// refuse) when the daemon is asked to bind to a non-loopback address, since
-/// the WebSocket API currently has no authentication.
-fn is_loopback_bind(bind: &str) -> bool {
-    if bind == "localhost" || bind == "::1" || bind == "0:0:0:0:0:0:0:1" {
-        return true;
-    }
-    // Strip a bracketed IPv6 literal like [::1].
-    let candidate = bind.trim_matches(|c| c == '[' || c == ']');
-    if let Ok(ip) = candidate.parse::<std::net::IpAddr>() {
-        return ip.is_loopback();
-    }
-    false
 }
 
 #[tokio::main]
@@ -156,63 +356,84 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let (simulate, port, bind) = if let Some(ref config_path) = args.config {
-        let config_str = tokio::fs::read_to_string(config_path).await?;
-        let config: Config = toml::from_str(&config_str)?;
-        (config.simulate.or(args.simulate), config.port, config.bind)
-    } else {
-        (args.simulate, args.port, args.bind)
+    let file_config = match &args.config {
+        Some(path) => toml::from_str::<Config>(&tokio::fs::read_to_string(path).await?)?,
+        None => Config::default(),
     };
-
-    let protocol = simulate.as_deref().unwrap_or("modbus");
+    let settings = resolve_settings(args.simulate, args.port, args.bind, file_config);
 
     if let Some(ref replay_path) = args.replay {
-        let raw = tokio::fs::read_to_string(replay_path).await?;
-        let bytes = if let Some(hex_str) = raw
-            .trim()
-            .strip_prefix("0x")
-            .or_else(|| raw.trim().strip_prefix("0X"))
-        {
-            hex::decode(hex_str.trim())
-                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
-        } else if raw.trim().chars().all(|c| c.is_ascii_hexdigit()) && raw.trim().len() % 2 == 0 {
-            hex::decode(raw.trim())
-                .map_err(|e| anyhow::anyhow!("invalid hex in replay file: {e}"))?
-        } else {
-            tokio::fs::read(replay_path).await?
+        let protocol = settings.simulate.as_deref().ok_or_else(|| {
+            anyhow!(
+                "--replay needs --simulate <protocol> to choose the parser (see --list-protocols)"
+            )
+        })?;
+        let raw = tokio::fs::read(replay_path).await?;
+        let bytes = match args.replay_format.as_str() {
+            "hex" => decode_hex_file(&raw)?,
+            "raw" => raw,
+            other => bail!("unknown --replay-format '{other}' (expected hex or raw)"),
         };
         let dp = plugins::replay_one(protocol, &bytes)
-            .map_err(|e| anyhow::anyhow!("replay parse failed: {e}"))?;
-        println!("{}", datapoint_to_json(&dp)?);
+            .map_err(|e| anyhow!("replay parse failed: {e}"))?;
+        println!("{}", json::to_json_string(&dp)?);
         return Ok(());
     }
+
+    let protocol = match settings.simulate.clone() {
+        Some(p) => p,
+        None => {
+            eprintln!("no --simulate given; defaulting to modbus");
+            "modbus".to_string()
+        }
+    };
+    let plugin = plugins::build_plugin(&protocol).map_err(|e| anyhow!("{e}"))?;
+
+    if let Some(ref token) = args.token {
+        if token.is_empty() {
+            bail!("--token must not be empty");
+        }
+    }
+
+    let bind = settings.bind;
+    let port = settings.port;
+    let loopback = is_loopback_bind(&bind);
 
     println!("TPT Protocol Daemon v0.1.0");
     println!("Simulating: {protocol}");
 
-    if !is_loopback_bind(&bind) {
+    if !loopback {
         eprintln!(
-            "WARNING: binding to non-loopback address '{bind}'. The daemon's WebSocket \
-             API has no authentication; expose it only on a trusted network."
+            "WARNING: binding to non-loopback address '{bind}'. Host-header checks are \
+             disabled; expose the WebSocket API only on a trusted network and use --token."
         );
     }
 
+    let mut allowed_origins: Vec<String> = TAURI_ORIGINS.iter().map(|o| o.to_string()).collect();
+    allowed_origins.extend(args.allow_origin.iter().map(|o| normalize_origin(o)));
+    let policy = Arc::new(WsPolicy {
+        token: args.token,
+        allowed_origins,
+        check_host: loopback,
+    });
+
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
 
-    let plugin = plugins::build_plugin(protocol).map_err(|e| anyhow::anyhow!("{e}"))?;
     let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
     let sim_tx = tx.clone();
+    let sim_name = protocol.clone();
     tokio::spawn(async move {
         let mut stream = stream;
         while let Some(dp) = stream.next().await {
             let _ = sim_tx.send(dp);
         }
+        eprintln!("simulation stream for {sim_name} ended");
     });
 
     let ws_tx = tx.clone();
     let bind_clone = bind.clone();
     tokio::spawn(async move {
-        if let Err(e) = ws_server(&bind_clone, port, ws_tx).await {
+        if let Err(e) = ws_server(&bind_clone, port, ws_tx, policy).await {
             eprintln!("WebSocket server error: {e}");
         }
     });
@@ -240,5 +461,88 @@ mod tests {
             );
         }
         assert!(plugins::build_plugin("not-a-protocol").is_err());
+    }
+
+    #[test]
+    fn loopback_bind_detection() {
+        assert!(is_loopback_bind("127.0.0.1"));
+        assert!(is_loopback_bind("localhost"));
+        assert!(is_loopback_bind("LOCALHOST"));
+        assert!(is_loopback_bind("localhost."));
+        assert!(is_loopback_bind("::1"));
+        assert!(is_loopback_bind("[::1]"));
+        assert!(!is_loopback_bind("0.0.0.0"));
+        assert!(!is_loopback_bind("192.168.1.10"));
+        assert!(!is_loopback_bind("localhost.evil.example"));
+    }
+
+    #[test]
+    fn host_header_must_be_loopback() {
+        assert!(host_header_is_loopback("127.0.0.1:9080"));
+        assert!(host_header_is_loopback("localhost:9080"));
+        assert!(host_header_is_loopback("[::1]:9080"));
+        assert!(!host_header_is_loopback("evil.example:9080"));
+        assert!(!host_header_is_loopback("localhost.evil.example"));
+        assert!(!host_header_is_loopback(""));
+    }
+
+    #[test]
+    fn token_comparison_is_exact() {
+        assert!(ct_eq(b"secret", b"secret"));
+        assert!(!ct_eq(b"secret", b"secreT"));
+        assert!(!ct_eq(b"secret", b"secret2"));
+    }
+
+    #[test]
+    fn origin_normalization() {
+        assert_eq!(
+            normalize_origin("HTTP://Tauri.localhost/"),
+            "http://tauri.localhost"
+        );
+    }
+
+    #[test]
+    fn cli_overrides_config_file() {
+        let file = Config {
+            simulate: Some("canopen".into()),
+            port: Some(7000),
+            bind: Some("0.0.0.0".into()),
+        };
+        let s = resolve_settings(Some("modbus".into()), Some(9999), None, file);
+        assert_eq!(
+            s,
+            Settings {
+                simulate: Some("modbus".into()),
+                bind: "0.0.0.0".into(),
+                port: 9999,
+            }
+        );
+    }
+
+    #[test]
+    fn defaults_when_nothing_set() {
+        let s = resolve_settings(None, None, None, Config::default());
+        assert_eq!(
+            s,
+            Settings {
+                simulate: None,
+                bind: "127.0.0.1".into(),
+                port: DEFAULT_PORT,
+            }
+        );
+    }
+
+    #[test]
+    fn config_rejects_unknown_fields() {
+        assert!(toml::from_str::<Config>("prot = 1").is_err());
+    }
+
+    #[test]
+    fn hex_replay_decoding() {
+        assert_eq!(decode_hex_file(b"0x0102\n").unwrap(), vec![1, 2]);
+        assert_eq!(decode_hex_file(b"01 02 ff").unwrap(), vec![1, 2, 255]);
+        assert!(decode_hex_file(b"zz").is_err());
+        // Binary input is not valid UTF-8 and must not be silently misread.
+        assert!(decode_hex_file(&[0xff, 0x00, 0x12]).is_err());
     }
 }

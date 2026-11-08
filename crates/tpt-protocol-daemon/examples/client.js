@@ -7,7 +7,13 @@
 // --- Browser ---------------------------------------------------------------
 // const ws = new WebSocket("ws://127.0.0.1:9080");
 // ws.onmessage = (event) => {
-//   for (const dp of JSON.parse(event.data)) {
+//   const payload = JSON.parse(event.data);
+//   if (!Array.isArray(payload)) {
+//     // {"type":"lagged","dropped":n}: this client fell behind the stream.
+//     console.warn("daemon dropped", payload.dropped, "messages");
+//     return;
+//   }
+//   for (const dp of payload) {
 //     console.log(dp.source_protocol, dp.device_id, dp.point_id, dp.value, dp.quality);
 //   }
 // };
@@ -16,7 +22,12 @@
 // const WebSocket = require("ws");
 // const ws = new WebSocket("ws://127.0.0.1:9080");
 // ws.on("message", (data) => {
-//   for (const dp of JSON.parse(data)) {
+//   const payload = JSON.parse(data);
+//   if (!Array.isArray(payload)) {
+//     console.warn("daemon dropped", payload.dropped, "messages");
+//     return;
+//   }
+//   for (const dp of payload) {
 //     console.log(dp.source_protocol, dp.device_id, dp.point_id, dp.value, dp.quality);
 //   }
 // });
