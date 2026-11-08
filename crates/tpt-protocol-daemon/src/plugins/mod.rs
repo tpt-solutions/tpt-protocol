@@ -95,6 +95,45 @@ macro_rules! def_protocol {
                 other => Err(format!("unknown protocol: {other}")),
             }
         }
+
+        /// Frames one message from the front of `bytes` with the protocol's
+        /// `try_parse`, and normalizes it.
+        ///
+        /// Returns `Ok(None)` when more bytes are needed. Otherwise returns the
+        /// number of bytes used and the frame's points, or the normalization
+        /// error for a frame that parsed but carries no data (such as a read
+        /// request). Parse errors are `Err`.
+        pub fn decode_one(
+            name: &str,
+            bytes: &[u8],
+        ) -> Result<Option<(Result<Vec<DataPoint>, String>, usize)>, String> {
+            match name {
+                $(
+                    $name => {
+                        let parser = $parser;
+                        let normalizer = $normalizer;
+                        match parser.try_parse(bytes).map_err(|e| format!("{e:?}"))? {
+                            None => Ok(None),
+                            Some((frame, used)) => {
+                                let points = normalizer
+                                    .normalize_all(&frame)
+                                    .map(|mut points| {
+                                        for dp in &mut points {
+                                            if dp.timestamp == 0 {
+                                                dp.timestamp = now_ms();
+                                            }
+                                        }
+                                        points
+                                    })
+                                    .map_err(|e| format!("{e:?}"));
+                                Ok(Some((points, used)))
+                            }
+                        }
+                    }
+                )+
+                other => Err(format!("unknown protocol: {other}")),
+            }
+        }
     };
 }
 

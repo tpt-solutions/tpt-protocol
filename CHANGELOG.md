@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Daemon transports: `--tcp-connect`, `--tcp-listen` and `--udp-bind` read real bytes and decode them with each protocol's `try_parse` and normalizer. Serial and CAN remain deferred.
 - `DataNormalizer::normalize_all` returns every point a frame carries. `normalize_batch` uses it, so batches fan out. Sparkplug, Matter, NMEA and SDC override it.
 - `FrameEncoder` trait in `tpt-protocol-core`, the inverse of `FrameParser`, and `ModbusEncoder`, with round-trip tests.
 - `cddl_conformance` tests check encoder output against the CDDL rules, and check that the

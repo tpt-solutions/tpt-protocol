@@ -1,4 +1,5 @@
 mod plugins;
+mod transport;
 
 use std::net::IpAddr;
 use std::pin::Pin;
@@ -66,6 +67,15 @@ struct Args {
     /// Additional browser Origin allowed to connect (repeatable), e.g. a dev server.
     #[arg(long = "allow-origin")]
     allow_origin: Vec<String>,
+    /// Connect to a device at HOST:PORT over TCP, reconnecting when the link drops.
+    #[arg(long = "tcp-connect")]
+    tcp_connect: Option<String>,
+    /// Listen for devices on ADDR:PORT over TCP.
+    #[arg(long = "tcp-listen")]
+    tcp_listen: Option<String>,
+    /// Receive UDP datagrams on ADDR:PORT. Each datagram holds whole frames.
+    #[arg(long = "udp-bind")]
+    udp_bind: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -388,6 +398,11 @@ async fn main() -> Result<()> {
         }
     };
     let plugin = plugins::build_plugin(&protocol).map_err(|e| anyhow!("{e}"))?;
+    let transport_endpoint = transport::Endpoint::from_flags(
+        args.tcp_connect.clone(),
+        args.tcp_listen.clone(),
+        args.udp_bind.clone(),
+    )?;
 
     if let Some(ref token) = args.token {
         if token.is_empty() {
@@ -419,16 +434,30 @@ async fn main() -> Result<()> {
 
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
 
-    let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
-    let sim_tx = tx.clone();
-    let sim_name = protocol.clone();
-    tokio::spawn(async move {
-        let mut stream = stream;
-        while let Some(dp) = stream.next().await {
-            let _ = sim_tx.send(dp);
+    match transport_endpoint {
+        Some(endpoint) => {
+            // Real bytes from a device replace the simulation.
+            let real_tx = tx.clone();
+            let real_protocol = protocol.clone();
+            tokio::spawn(async move {
+                if let Err(e) = transport::run(endpoint, real_protocol.clone(), real_tx).await {
+                    eprintln!("{real_protocol}: transport stopped: {e}");
+                }
+            });
         }
-        eprintln!("simulation stream for {sim_name} ended");
-    });
+        None => {
+            let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
+            let sim_tx = tx.clone();
+            let sim_name = protocol.clone();
+            tokio::spawn(async move {
+                let mut stream = stream;
+                while let Some(dp) = stream.next().await {
+                    let _ = sim_tx.send(dp);
+                }
+                eprintln!("simulation stream for {sim_name} ended");
+            });
+        }
+    }
 
     let ws_tx = tx.clone();
     let bind_clone = bind.clone();

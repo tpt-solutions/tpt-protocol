@@ -4,17 +4,18 @@ Background service for the [TPT Protocol](https://github.com/tpt-protocol/tpt-pr
 
 The daemon is a `std` binary crate that drives every protocol crate in the
 workspace through a common plugin interface and streams normalized TUP data
-to local clients over WebSocket. It is **simulation-only**: it does not
-perform real hardware I/O (see [_Known gaps_](#known-gaps) below).
+to local clients over WebSocket. It can read real bytes over **TCP** (client
+or listener) and **UDP**. Serial and CAN are not implemented (see
+[_Known gaps_](#known-gaps) below).
 
 ## Status / Conformance
 
 - **Version:** `0.1.0` (initial release).
-- **Simulation only:** all 19 protocol crates are wired in as simulated
-  `ProtocolPlugin` implementations that emit synthetic TUP data points. There
-  is **no real transport** (Serial/CAN/TCP/UDP) — genuine hardware I/O is
-  future work (see the workspace `TODO.md`, Later/Deferred section, and the
-  root `CHANGELOG.md`).
+- **Transports:** TCP (connect or listen) and UDP read real bytes. Each
+  protocol's `try_parse` frames them and its normalizer produces TUP data
+  points. Without a transport flag the daemon runs the simulation. Serial and
+  CAN are future work (see the workspace `TODO.md`, Phase 12). They need
+  hardware to test, and none was available when they were deferred.
 - **Security posture:** the WebSocket API is bound to loopback (`127.0.0.1`)
   by default. On a loopback bind, the handshake rejects any `Host` header that
   is not a loopback name (DNS-rebinding defence) and any browser `Origin` that
@@ -107,12 +108,18 @@ The 19 supported protocols (dispatched by the lowercase name shown):
 
 ### Transports
 
-There is **no real transport layer** yet. The `ProtocolPlugin` trait exposes
-only `simulate()` — there is no real-I/O method. Real Serial/CAN/TCP/UDP
-clients behind a common transport trait are future work (TODO.md Phase 5
-"Real transport clients", Later/Deferred). In the meantime, "transport" is
-synthetic: per-tick generated `DataPoint`s (simulation mode) or bytes read
-from a file (`--replay`).
+The daemon's `transport` module reads bytes from one endpoint, chosen with one
+of three flags:
+
+- `--tcp-connect HOST:PORT`: connects to a device and reconnects when the link drops.
+- `--tcp-listen ADDR:PORT`: accepts devices, one task per connection.
+- `--udp-bind ADDR:PORT`: receives datagrams. Each datagram must hold whole frames.
+
+A stream that fails to parse discards its buffer and resyncs. Frames that parse
+but carry no data (such as Modbus read requests) are skipped. The
+`ProtocolPlugin` trait still exposes only `simulate()`. The transport runs
+beside the plugin, and the plugin is not used when an endpoint is set.
+Without a flag the daemon simulates, and `--replay` reads bytes from a file.
 
 ### Local API (WebSocket)
 
