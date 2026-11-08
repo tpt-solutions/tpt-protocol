@@ -12,26 +12,38 @@ use core::fmt;
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
-/// EtherCAT datagram command.
+/// EtherCAT datagram command (IEC 61158-4-12).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EcCmd {
-    /// APRD – Auto-increment Physical Read
+    /// APRD (1): auto-increment physical read.
     Aprd,
-    /// APWR – Auto-increment Physical Write
+    /// APWR (2): auto-increment physical write.
     Apwr,
-    /// FPRD – Configured-address Physical Read
+    /// APRW (3): auto-increment physical read/write.
+    Aprw,
+    /// FPRD (4): configured-address physical read.
     Fprd,
-    /// FPWR – Configured-address Physical Write
+    /// FPWR (5): configured-address physical write.
     Fpwr,
-    /// BRD – Broadcast Read
+    /// FPRW (6): configured-address physical read/write.
+    Fprw,
+    /// BRD (7): broadcast read.
     Brd,
-    /// BWR – Broadcast Write
+    /// BWR (8): broadcast write.
     Bwr,
-    /// LRD – Logical Memory Read
+    /// BRW (9): broadcast read/write.
+    Brw,
+    /// LRD (10): logical memory read.
     Lrd,
-    /// LWR – Logical Memory Write
+    /// LWR (11): logical memory write.
     Lwr,
-    /// Unknown command
+    /// LRW (12): logical memory read/write.
+    Lrw,
+    /// ARMW (13): auto-increment read multiple write.
+    Armw,
+    /// FRMW (14): configured-address read multiple write.
+    Frmw,
+    /// Any other command code.
     Unknown(u8),
 }
 
@@ -39,13 +51,19 @@ impl EcCmd {
     fn from_u8(v: u8) -> Self {
         match v {
             1 => Self::Aprd,
-            5 => Self::Apwr,
+            2 => Self::Apwr,
+            3 => Self::Aprw,
             4 => Self::Fprd,
-            8 => Self::Fpwr,
+            5 => Self::Fpwr,
+            6 => Self::Fprw,
             7 => Self::Brd,
-            11 => Self::Bwr,
-            12 => Self::Lrd,
-            13 => Self::Lwr,
+            8 => Self::Bwr,
+            9 => Self::Brw,
+            10 => Self::Lrd,
+            11 => Self::Lwr,
+            12 => Self::Lrw,
+            13 => Self::Armw,
+            14 => Self::Frmw,
             other => Self::Unknown(other),
         }
     }
@@ -56,48 +74,76 @@ impl fmt::Display for EcCmd {
         match self {
             Self::Aprd => write!(f, "APRD"),
             Self::Apwr => write!(f, "APWR"),
+            Self::Aprw => write!(f, "APRW"),
             Self::Fprd => write!(f, "FPRD"),
             Self::Fpwr => write!(f, "FPWR"),
+            Self::Fprw => write!(f, "FPRW"),
             Self::Brd => write!(f, "BRD"),
             Self::Bwr => write!(f, "BWR"),
+            Self::Brw => write!(f, "BRW"),
             Self::Lrd => write!(f, "LRD"),
             Self::Lwr => write!(f, "LWR"),
+            Self::Lrw => write!(f, "LRW"),
+            Self::Armw => write!(f, "ARMW"),
+            Self::Frmw => write!(f, "FRMW"),
             Self::Unknown(v) => write!(f, "Unknown({v})"),
         }
     }
 }
 
-/// A parsed EtherCAT frame (Ethernet frame with EtherType 0x88A4).
+/// One datagram inside an EtherCAT frame.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EthercatFrame {
-    pub eth_length: u16,
-    pub eth_type: u8,
-    pub datagram_cmd: EcCmd,
-    pub datagram_index: u8,
-    pub addressing: u32,
-    pub datagram_length: u16,
+pub struct EcDatagram {
+    pub cmd: EcCmd,
+    pub index: u8,
+    /// Auto-increment or configured station address (little-endian on the wire).
+    pub adp: u16,
+    /// Offset within the slave's memory, or the logical address for LRD/LWR (little-endian).
+    pub ado: u16,
+    /// Set when another datagram follows in this frame.
+    pub more: bool,
+    /// Set when the datagram is circulating (bit 14 of the length field).
+    pub circulating: bool,
+    pub irq: u16,
     pub data: Vec<u8>,
     pub working_counter: u16,
 }
 
+/// A parsed EtherCAT frame: the EtherCAT header and its datagram chain.
+///
+/// Expects the Ethernet payload, with the EtherType 0x88A4 already removed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EthercatFrame {
+    /// Length in bytes of the datagram section (bits 0-10 of the header).
+    pub eth_length: u16,
+    /// Protocol type (bits 12-15 of the header). 1 means EtherCAT commands.
+    pub eth_type: u8,
+    pub datagrams: Vec<EcDatagram>,
+}
+
 impl fmt::Display for EthercatFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "EtherCAT[cmd={}, idx={}, addr=0x{:08X}, len={}, wkc={}]",
-            self.datagram_cmd,
-            self.datagram_index,
-            self.addressing,
-            self.datagram_length,
-            self.working_counter,
-        )
+        match self.datagrams.first() {
+            Some(d) => write!(
+                f,
+                "EtherCAT[cmd={}, idx={}, datagrams={}, wkc={}]",
+                d.cmd,
+                d.index,
+                self.datagrams.len(),
+                d.working_counter,
+            ),
+            None => write!(f, "EtherCAT[no datagrams]"),
+        }
     }
 }
 
-/// EtherCAT frame parser.
-///
-/// Expects raw Ethernet payload starting at EtherCAT header
-/// (EtherType 0x88A4 should already be stripped).
+/// Datagram header: cmd, index, ADP, ADO, length/flags, IRQ. Then data and WKC.
+const DATAGRAM_HEADER: usize = 10;
+const WKC: usize = 2;
+/// EtherCAT header (2 bytes) plus the datagram section length.
+const HEADER: usize = 2;
+
+/// Parses EtherCAT frames.
 #[derive(Clone, Debug, Default)]
 pub struct EthercatParser;
 
@@ -107,66 +153,114 @@ impl EthercatParser {
     }
 }
 
+/// Decodes one frame from the front of `bytes`. Returns `Ok(None)` when more
+/// bytes are needed. Trailing bytes after the EtherCAT section are Ethernet
+/// padding and are left unconsumed.
+fn decode_frame(bytes: &[u8]) -> Result<Option<(EthercatFrame, usize)>, Error> {
+    if bytes.len() < HEADER {
+        return Ok(None);
+    }
+    // EtherCAT header is little-endian: length (bits 0-10), reserved (bit 11), type (bits 12-15).
+    let header = u16::from_le_bytes([bytes[0], bytes[1]]);
+    let eth_length = header & 0x07FF;
+    let eth_type = ((header >> 12) & 0x0F) as u8;
+    if eth_type != 1 {
+        return Err(Error::Parse(format!(
+            "EtherCAT type {eth_type} is not an EtherCAT command frame (expected 1)"
+        )));
+    }
+    let section_end = HEADER + eth_length as usize;
+    if eth_length == 0 {
+        return Err(Error::Parse("EtherCAT length field is zero".into()));
+    }
+    if bytes.len() < section_end {
+        return Ok(None);
+    }
+
+    let mut datagrams = Vec::new();
+    let mut pos = HEADER;
+    loop {
+        if pos + DATAGRAM_HEADER > section_end {
+            return Err(Error::Parse(format!(
+                "EtherCAT datagram header needs {} bytes but only {} remain",
+                DATAGRAM_HEADER,
+                section_end - pos,
+            )));
+        }
+        let h = &bytes[pos..pos + DATAGRAM_HEADER];
+        let cmd = EcCmd::from_u8(h[0]);
+        let index = h[1];
+        let adp = u16::from_le_bytes([h[2], h[3]]);
+        let ado = u16::from_le_bytes([h[4], h[5]]);
+        let flags = u16::from_le_bytes([h[6], h[7]]);
+        let data_len = (flags & 0x07FF) as usize;
+        let circulating = flags & 0x4000 != 0;
+        let more = flags & 0x8000 != 0;
+        let irq = u16::from_le_bytes([h[8], h[9]]);
+
+        let data_start = pos + DATAGRAM_HEADER;
+        let wkc_start = data_start + data_len;
+        let datagram_end = wkc_start + WKC;
+        if datagram_end > section_end {
+            return Err(Error::Parse(format!(
+                "EtherCAT datagram of {data_len} data bytes overruns the {eth_length}-byte section"
+            )));
+        }
+        let working_counter = u16::from_le_bytes([bytes[wkc_start], bytes[wkc_start + 1]]);
+        datagrams.push(EcDatagram {
+            cmd,
+            index,
+            adp,
+            ado,
+            more,
+            circulating,
+            irq,
+            data: bytes[data_start..wkc_start].to_vec(),
+            working_counter,
+        });
+        pos = datagram_end;
+        if !more {
+            break;
+        }
+        if pos == section_end {
+            return Err(Error::Parse(
+                "EtherCAT datagram sets 'more follows' but no datagram follows".into(),
+            ));
+        }
+    }
+
+    if pos != section_end {
+        return Err(Error::Parse(format!(
+            "EtherCAT section is {eth_length} bytes but its datagrams end at {}",
+            pos - HEADER,
+        )));
+    }
+
+    Ok(Some((
+        EthercatFrame {
+            eth_length,
+            eth_type,
+            datagrams,
+        },
+        section_end,
+    )))
+}
+
 impl FrameParser for EthercatParser {
     type Frame = EthercatFrame;
 
     fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
-        if bytes.len() < 3 {
-            return Err(Error::Parse(format!(
-                "EtherCAT frame too short: {} bytes, need at least 3",
-                bytes.len(),
-            )));
+        match decode_frame(bytes)? {
+            Some((frame, _consumed)) => Ok(frame),
+            None => Err(Error::Parse(format!(
+                "EtherCAT frame truncated: have {} bytes",
+                bytes.len()
+            ))),
         }
+    }
 
-        // EtherCAT header: length(2) + type(1)
-        let eth_length = u16::from_be_bytes([bytes[0], bytes[1]]);
-        let eth_type = bytes[2];
-
-        // Datagram header (10 bytes: cmd + index + addressing + length + reserved)
-        if bytes.len() < 13 {
-            return Err(Error::Parse(format!(
-                "EtherCAT frame too short for datagram header: {} bytes, need at least 13",
-                bytes.len(),
-            )));
-        }
-
-        let cmd_byte = bytes[3];
-        let datagram_cmd = EcCmd::from_u8(cmd_byte);
-        let datagram_index = bytes[4];
-        let addressing = u32::from_be_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]);
-        let datagram_length = u16::from_be_bytes([bytes[9], bytes[10]]);
-
-        // Reserved bytes 11-12
-        // Data starts at offset 13
-        let data_start = 13usize;
-        let wkc_start = data_start + datagram_length as usize;
-
-        if bytes.len() < wkc_start + 2 {
-            return Err(Error::Parse(format!(
-                "EtherCAT truncated: have {} bytes, need {} for data+WKC",
-                bytes.len(),
-                wkc_start + 2,
-            )));
-        }
-
-        let data = if datagram_length > 0 {
-            bytes[data_start..wkc_start].to_vec()
-        } else {
-            Vec::new()
-        };
-
-        let working_counter = u16::from_le_bytes([bytes[wkc_start], bytes[wkc_start + 1]]);
-
-        Ok(EthercatFrame {
-            eth_length,
-            eth_type,
-            datagram_cmd,
-            datagram_index,
-            addressing,
-            datagram_length,
-            data,
-            working_counter,
-        })
+    fn try_parse(&self, bytes: &[u8]) -> Result<Option<(Self::Frame, usize)>, Error> {
+        decode_frame(bytes)
     }
 }
 
@@ -216,7 +310,7 @@ impl StateValidator for EthercatValidator {
     }
 }
 
-/// Normalizes EtherCAT frames into TUP DataPoints.
+/// Normalizes EtherCAT frames into TUP DataPoints. Uses the first datagram.
 #[derive(Clone, Debug, Default)]
 pub struct EthercatNormalizer;
 
@@ -230,14 +324,18 @@ impl DataNormalizer for EthercatNormalizer {
     type Frame = EthercatFrame;
 
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+        let datagram = frame
+            .datagrams
+            .first()
+            .ok_or_else(|| Error::Normalize("EtherCAT frame has no datagrams".into()))?;
         let device_id = String::from("ethercat:master");
-        let point_id = format!("cmd:{}", frame.datagram_cmd);
+        let point_id = format!("cmd:{}", datagram.cmd);
         let timestamp = 0;
 
-        let value = if !frame.data.is_empty() {
-            TupValue::Bytes(frame.data.clone())
+        let value = if !datagram.data.is_empty() {
+            TupValue::Bytes(datagram.data.clone())
         } else {
-            TupValue::Int(frame.working_counter as i64)
+            TupValue::Int(datagram.working_counter as i64)
         };
 
         Ok(DataPoint::new(
@@ -256,91 +354,151 @@ mod tests {
     use super::*;
     use alloc::vec;
 
-    fn make_ethercat_frame(cmd: u8, idx: u8, addr: u32, data: &[u8]) -> Vec<u8> {
-        let mut buf = Vec::new();
-        // EtherCAT header
-        let eth_length = (10 + data.len() + 2) as u16; // datagram header + data + WKC
-        buf.extend_from_slice(&eth_length.to_be_bytes());
-        buf.push(0x01); // type
-                        // Datagram header
-        buf.push(cmd);
-        buf.push(idx);
-        buf.extend_from_slice(&addr.to_be_bytes());
-        buf.extend_from_slice(&(data.len() as u16).to_be_bytes());
-        buf.extend_from_slice(&[0x00, 0x00]); // reserved
-        buf.extend_from_slice(data);
-        buf.extend_from_slice(&0x0000u16.to_le_bytes()); // WKC placeholder
-        buf
+    /// One datagram: header, data, and a working counter, all little-endian.
+    fn datagram(cmd: u8, idx: u8, adp: u16, ado: u16, data: &[u8], more: bool) -> Vec<u8> {
+        let mut out = vec![cmd, idx];
+        out.extend_from_slice(&adp.to_le_bytes());
+        out.extend_from_slice(&ado.to_le_bytes());
+        let flags = data.len() as u16 | if more { 0x8000 } else { 0 };
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&[0x00, 0x00]); // IRQ
+        out.extend_from_slice(data);
+        out.extend_from_slice(&0x0003u16.to_le_bytes()); // WKC = 3
+        out
+    }
+
+    /// EtherCAT frame: little-endian header with length and type 1, then datagrams.
+    fn frame(datagrams: &[Vec<u8>]) -> Vec<u8> {
+        let body: Vec<u8> = datagrams.concat();
+        let header = (body.len() as u16 & 0x07FF) | (1 << 12);
+        let mut out = header.to_le_bytes().to_vec();
+        out.extend_from_slice(&body);
+        out
     }
 
     #[test]
-    fn valid_parse_fprd() {
-        // FPRD (cmd=4) with some data
-        let bytes = make_ethercat_frame(4, 0x01, 0x1000, &[0xAA, 0xBB]);
-        let parser = EthercatParser::new();
-        let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.datagram_cmd, EcCmd::Fprd);
-        assert_eq!(frame.datagram_index, 0x01);
-        assert_eq!(frame.addressing, 0x1000);
-        assert_eq!(frame.data, vec![0xAA, 0xBB]);
-        assert_eq!(frame.working_counter, 0);
+    fn command_table_matches_iec_61158() {
+        assert_eq!(EcCmd::from_u8(1), EcCmd::Aprd);
+        assert_eq!(EcCmd::from_u8(2), EcCmd::Apwr);
+        assert_eq!(EcCmd::from_u8(4), EcCmd::Fprd);
+        assert_eq!(EcCmd::from_u8(5), EcCmd::Fpwr);
+        assert_eq!(EcCmd::from_u8(7), EcCmd::Brd);
+        assert_eq!(EcCmd::from_u8(8), EcCmd::Bwr);
+        assert_eq!(EcCmd::from_u8(10), EcCmd::Lrd);
+        assert_eq!(EcCmd::from_u8(11), EcCmd::Lwr);
+        assert_eq!(EcCmd::from_u8(12), EcCmd::Lrw);
     }
 
     #[test]
-    fn valid_parse_apwr() {
-        let bytes = make_ethercat_frame(5, 0x02, 0x2000, &[0x01, 0x02, 0x03, 0x04]);
-        let parser = EthercatParser::new();
-        let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.datagram_cmd, EcCmd::Apwr);
-        assert_eq!(frame.datagram_index, 0x02);
-        assert_eq!(frame.data.len(), 4);
+    fn header_is_little_endian_with_eleven_bit_length() {
+        // Length 12 and type 1: header value 0x100C, sent low byte first.
+        let bytes = frame(&[datagram(1, 0, 0, 0, &[], false)]);
+        assert_eq!(&bytes[..2], &[0x0C, 0x10]);
+        let parsed = EthercatParser::new().parse(&bytes).unwrap();
+        assert_eq!(parsed.eth_length, 12);
+        assert_eq!(parsed.eth_type, 1);
+    }
+
+    #[test]
+    fn single_datagram_fields_are_little_endian() {
+        let bytes = frame(&[datagram(4, 0x01, 0x1000, 0x0A0B, &[0xAA, 0xBB], false)]);
+        let parsed = EthercatParser::new().parse(&bytes).unwrap();
+        assert_eq!(parsed.datagrams.len(), 1);
+        let d = &parsed.datagrams[0];
+        assert_eq!(d.cmd, EcCmd::Fprd);
+        assert_eq!(d.index, 0x01);
+        assert_eq!(d.adp, 0x1000);
+        assert_eq!(d.ado, 0x0A0B);
+        assert_eq!(d.data, vec![0xAA, 0xBB]);
+        assert_eq!(d.working_counter, 3);
+        assert!(!d.more);
+    }
+
+    #[test]
+    fn multiple_datagrams_are_chained() {
+        let bytes = frame(&[
+            datagram(10, 0x01, 0, 0x0000, &[1, 2, 3, 4], true),
+            datagram(2, 0x02, 0x0001, 0x0130, &[0xFF], false),
+        ]);
+        let parsed = EthercatParser::new().parse(&bytes).unwrap();
+        assert_eq!(parsed.datagrams.len(), 2);
+        assert_eq!(parsed.datagrams[0].cmd, EcCmd::Lrd);
+        assert!(parsed.datagrams[0].more);
+        assert_eq!(parsed.datagrams[1].cmd, EcCmd::Apwr);
+        assert_eq!(parsed.datagrams[1].data, vec![0xFF]);
+    }
+
+    #[test]
+    fn more_flag_without_following_datagram_is_rejected() {
+        let bytes = frame(&[datagram(1, 0, 0, 0, &[], true)]);
+        assert!(EthercatParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn section_length_must_match_the_datagram_chain() {
+        // Header claims 4 extra bytes that no datagram accounts for.
+        let mut bytes = frame(&[datagram(1, 0, 0, 0, &[], false)]);
+        bytes.extend_from_slice(&[0x00; 4]);
+        let header = (12u16 + 4) | (1 << 12);
+        bytes[..2].copy_from_slice(&header.to_le_bytes());
+        assert!(EthercatParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn trailing_ethernet_padding_is_ignored() {
+        let mut bytes = frame(&[datagram(1, 0, 0, 0, &[], false)]);
+        bytes.extend_from_slice(&[0x00; 20]);
+        let (parsed, consumed) = EthercatParser::new().try_parse(&bytes).unwrap().unwrap();
+        assert_eq!(parsed.datagrams.len(), 1);
+        assert_eq!(consumed, 14);
+    }
+
+    #[test]
+    fn wrong_type_is_rejected() {
+        let mut bytes = frame(&[datagram(1, 0, 0, 0, &[], false)]);
+        bytes[1] = 0x20; // type 2
+        assert!(EthercatParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn incomplete_frame_needs_more_data() {
+        let bytes = frame(&[datagram(1, 0, 0, 0, &[1, 2, 3], false)]);
+        let short = &bytes[..bytes.len() - 1];
+        assert_eq!(EthercatParser::new().try_parse(short).unwrap(), None);
+        assert!(EthercatParser::new().parse(short).is_err());
+    }
+
+    #[test]
+    fn datagram_overrunning_section_is_rejected() {
+        // Data length 50 in a 12-byte section.
+        let mut bytes = frame(&[datagram(1, 0, 0, 0, &[], false)]);
+        bytes[2 + 6] = 50; // low byte of the first datagram's length field
+        assert!(EthercatParser::new().parse(&bytes).is_err());
     }
 
     #[test]
     fn invalid_too_short() {
-        let parser = EthercatParser::new();
-        let result = parser.parse(&[0x00, 0x01]);
-        assert!(result.is_err());
+        assert!(EthercatParser::new().parse(&[0x00, 0x01]).is_err());
     }
 
     #[test]
-    fn truncated_datagram() {
-        let parser = EthercatParser::new();
-        // Only EtherCAT header + partial datagram
-        let result = parser.parse(&[
-            0x00, 0x0A, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        ]);
-        assert!(result.is_err());
+    fn garbage_input_is_rejected() {
+        assert!(EthercatParser::new().parse(&[0xFFu8; 15]).is_err());
     }
 
     #[test]
-    fn garbage_input() {
-        let parser = EthercatParser::new();
-        // Frames with datagram_length = 0 avoid truncation
-        let mut buf = vec![0xFFu8; 15];
-        buf[9] = 0x00;
-        buf[10] = 0x00;
-        let result = parser.parse(&buf);
-        assert!(result.is_ok());
-        let frame = result.unwrap();
-        assert_eq!(frame.datagram_cmd, EcCmd::Unknown(0xFF));
-    }
-
-    #[test]
-    fn normalize_roundtrip() {
-        let parser = EthercatParser::new();
-        let normalizer = EthercatNormalizer::new();
-        let bytes = make_ethercat_frame(1, 0x00, 0x0000, &[]);
-        let frame = parser.parse(&bytes).unwrap();
-        let dp = normalizer.normalize(&frame).unwrap();
+    fn normalize_uses_first_datagram() {
+        let bytes = frame(&[datagram(2, 0x00, 0x0000, 0x0000, &[0x34, 0x12], false)]);
+        let parsed = EthercatParser::new().parse(&bytes).unwrap();
+        let dp = EthercatNormalizer::new().normalize(&parsed).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Ethercat);
         assert_eq!(dp.device_id, "ethercat:master");
-        assert_eq!(dp.point_id, "cmd:APRD");
+        assert_eq!(dp.point_id, "cmd:APWR");
+        assert_eq!(dp.value, TupValue::Bytes(vec![0x34, 0x12]));
     }
 
     #[test]
     fn validator_ok() {
-        let validator = EthercatValidator::new();
         let state = EthercatState {
             connected: true,
             slave_count: 5,
@@ -348,19 +506,18 @@ mod tests {
             last_ok_timestamp: 1000,
             error_count: 0,
         };
-        assert!(validator.validate(&state).is_ok());
+        assert!(EthercatValidator::new().validate(&state).is_ok());
     }
 
     #[test]
     fn validator_not_connected() {
-        let validator = EthercatValidator::new();
-        let state = EthercatState::default();
-        assert!(validator.validate(&state).is_err());
+        assert!(EthercatValidator::new()
+            .validate(&EthercatState::default())
+            .is_err());
     }
 
     #[test]
     fn validator_not_operational() {
-        let validator = EthercatValidator::new();
         let state = EthercatState {
             connected: true,
             slave_count: 5,
@@ -368,7 +525,7 @@ mod tests {
             last_ok_timestamp: 1000,
             error_count: 0,
         };
-        assert!(validator.validate(&state).is_err());
+        assert!(EthercatValidator::new().validate(&state).is_err());
     }
 }
 
