@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **KNX:** the parser reads cEMI `L_Data` frames. The previous layout was not KNX. Priority, hop count, source
+  individual address, group or individual destination, and APCI service are decoded. `DptValue` is now `Short` or `Data`.
+  DPT decoding is explicit: `decode_dpt1`, `decode_dpt5_percent` and `decode_dpt9`.
 - **CoAP:** option numbers no longer wrap silently. A payload marker with no payload is an error. Uri-Path is one
   UTF-8 segment per option, and invalid UTF-8 is an error. Max-Age, Observe and Content-Format longer than their
   maximum are errors.
