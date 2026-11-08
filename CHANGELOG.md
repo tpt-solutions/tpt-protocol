@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **EtherCAT:** command codes follow IEC 61158 (APWR=2, FPWR=5, BWR=8, LRD=10, LWR=11 were wrong). The
+  header is little-endian with an 11-bit length. `EthercatFrame` now holds a `datagrams` list.
+- **NMEA:** a checksum mismatch is a parse error. The checksum range is correct with leading whitespace.
+  GN, GL, GA and BD talkers are recognized.
 - **Modbus:** `ModbusParser::response()` parses response frames. Read responses, write echoes and exception
   responses (`fc | 0x80`) are distinct variants. Requests are range-checked, FC 0x05 accepts only 0xFF00/0x0000,
   and FC 0x10 checks its byte count. Read requests no longer normalize to their quantity; they return an error.
