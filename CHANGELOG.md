@@ -96,7 +96,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **J1939:** the PGN includes the EDP bit, and PDU1 frames mask out the destination address. TC1 is PGN 0,
   and 0xFF01 is no longer named TC1. CCVS (0xFEF1) is added, and 0xFEF5 is Ambient Conditions (`CabTemp` is renamed).
 - **ISOBUS:** PGN names follow ISO 11783 (0xEC00 is TP.CM, not RequestForRep). PDU1 masking matches J1939.
-  `implement_id` is little-endian.
+  The ECU identity is the 64-bit NAME of Address Claimed frames (ISO 11783-5 layout). `implement_id` and `device_class`
+  were read from arbitrary payload bytes and are removed.
 - **OPC UA:** Binary encoding is little-endian. `message_size` must equal the frame length. The MSG TypeId
   NodeId and ExtensionObject body are decoded. `OpcuaFrame::node_id` is replaced by `type_namespace`.
 - **EtherCAT:** command codes follow IEC 61158 (APWR=2, FPWR=5, BWR=8, LRD=10, LWR=11 were wrong). The

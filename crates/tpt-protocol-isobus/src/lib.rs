@@ -62,6 +62,51 @@ impl fmt::Display for IsobusPgn {
     }
 }
 
+/// The 64-bit NAME of an ECU, sent in an Address Claimed message (PGN 0xEE00).
+/// Bit layout from ISO 11783-5, section 4.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct IsobusName {
+    pub raw: u64,
+    /// Bits 0-20.
+    pub identity_number: u32,
+    /// Bits 21-31.
+    pub manufacturer_code: u16,
+    /// Bits 32-34.
+    pub ecu_instance: u8,
+    /// Bits 35-39.
+    pub function_instance: u8,
+    /// Bits 40-47.
+    pub function: u8,
+    /// Bits 49-55.
+    pub device_class: u8,
+    /// Bits 56-59.
+    pub device_class_instance: u8,
+    /// Bits 60-62.
+    pub industry_group: u8,
+    /// Bit 63.
+    pub arbitrary_address_capable: bool,
+}
+
+impl IsobusName {
+    /// Decodes an 8-byte NAME, little-endian.
+    pub fn from_bytes(bytes: [u8; 8]) -> Self {
+        let raw = u64::from_le_bytes(bytes);
+        let field = |shift: u32, bits: u32| (raw >> shift) & ((1u64 << bits) - 1);
+        Self {
+            raw,
+            identity_number: field(0, 21) as u32,
+            manufacturer_code: field(21, 11) as u16,
+            ecu_instance: field(32, 3) as u8,
+            function_instance: field(35, 5) as u8,
+            function: field(40, 8) as u8,
+            device_class: field(49, 7) as u8,
+            device_class_instance: field(56, 4) as u8,
+            industry_group: field(60, 3) as u8,
+            arbitrary_address_capable: field(63, 1) == 1,
+        }
+    }
+}
+
 /// A parsed ISOBUS CAN frame (same 29-bit CAN ID structure as J1939).
 #[derive(Clone, Debug, PartialEq)]
 pub struct IsobusFrame {
@@ -73,16 +118,22 @@ pub struct IsobusFrame {
     pub sa: u8,
     pub pgn: IsobusPgn,
     pub payload: Vec<u8>,
-    pub implement_id: u16,
-    pub device_class: u8,
+    /// The ECU NAME, present only on Address Claimed frames (PGN 0xEE00).
+    pub name: Option<IsobusName>,
 }
 
 impl fmt::Display for IsobusFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "ISOBUS[can_id=0x{:08X}, PGN={}, SA=0x{:02X}, impl_id=0x{:04X}, dev_class={}]",
-            self.can_id, self.pgn, self.sa, self.implement_id, self.device_class,
+            "ISOBUS[can_id=0x{:08X}, PGN={}, SA=0x{:02X}, name={}]",
+            self.can_id,
+            self.pgn,
+            self.sa,
+            match self.name {
+                Some(n) => format!("0x{:016X}", n.raw),
+                None => "-".into(),
+            },
         )
     }
 }
@@ -134,13 +185,15 @@ impl FrameParser for IsobusParser {
             )));
         }
 
-        // Extract implement_id from payload bytes 0-1, device_class from byte 2 (if available)
-        let implement_id = if payload.len() >= 2 {
-            u16::from_le_bytes([payload[0], payload[1]])
-        } else {
-            0
+        // The NAME is only defined for Address Claimed. Other PGNs carry no identity.
+        let name = match (pgn, payload.as_slice()) {
+            (IsobusPgn::AddressClaim, [b0, b1, b2, b3, b4, b5, b6, b7]) => {
+                Some(IsobusName::from_bytes([
+                    *b0, *b1, *b2, *b3, *b4, *b5, *b6, *b7,
+                ]))
+            }
+            _ => None,
         };
-        let device_class = if payload.len() >= 3 { payload[2] } else { 0 };
 
         Ok(IsobusFrame {
             can_id: raw_id,
@@ -151,8 +204,7 @@ impl FrameParser for IsobusParser {
             sa,
             pgn,
             payload,
-            implement_id,
-            device_class,
+            name,
         })
     }
 }
@@ -162,7 +214,8 @@ impl FrameParser for IsobusParser {
 pub struct IsobusState {
     pub connected: bool,
     pub source_address: u8,
-    pub implement_id: u16,
+    /// The raw 64-bit NAME of the ECU. Zero means not yet claimed.
+    pub ecu_name: u64,
     pub last_ok_timestamp: u64,
     pub error_count: u64,
 }
@@ -190,8 +243,10 @@ impl StateValidator for IsobusValidator {
                 state.source_address,
             )));
         }
-        if state.implement_id == 0 {
-            return Err(Error::State("ISOBUS implement_id must be non-zero".into()));
+        if state.ecu_name == 0 {
+            return Err(Error::State(
+                "ISOBUS ECU NAME is not set (device has not claimed an address)".into(),
+            ));
         }
         if state.error_count > 15 {
             return Err(Error::State(format!(
@@ -217,7 +272,13 @@ impl DataNormalizer for IsobusNormalizer {
     type Frame = IsobusFrame;
 
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        let device_id = format!("isobus:0x{:02X}:0x{:04X}", frame.sa, frame.implement_id);
+        let device_id = match frame.name {
+            Some(n) => format!(
+                "isobus:0x{:02X}:{:03X}:{:06X}",
+                frame.sa, n.manufacturer_code, n.identity_number
+            ),
+            None => format!("isobus:0x{:02X}", frame.sa),
+        };
         let point_id = format!("pgn:{}", frame.pgn);
         let timestamp = 0;
 
@@ -272,8 +333,39 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         assert_eq!(frame.pgn, IsobusPgn::TpCm);
         assert_eq!(frame.sa, 0x20);
-        assert_eq!(frame.implement_id, 0x0100); // bytes 00 01, little-endian
-        assert_eq!(frame.device_class, 0x02);
+        assert_eq!(frame.name, None);
+    }
+
+    #[test]
+    fn address_claimed_name_fields_follow_iso_11783() {
+        // Build a NAME with each field at its bit position, then decode it.
+        let raw: u64 = 0x12345 // identity number, bits 0-20
+            | (0x0AB << 21) // manufacturer code, bits 21-31
+            | (1 << 32) // ECU instance, bits 32-34
+            | (2 << 35) // function instance, bits 35-39
+            | (0x1F << 40) // function, bits 40-47
+            | (0x02 << 49) // device class, bits 49-55
+            | (3 << 56) // device class instance, bits 56-59
+            | (2 << 60) // industry group, bits 60-62
+            | (1 << 63); // arbitrary address capable, bit 63
+        let name = IsobusName::from_bytes(raw.to_le_bytes());
+        assert_eq!(name.identity_number, 0x12345);
+        assert_eq!(name.manufacturer_code, 0x0AB);
+        assert_eq!(name.ecu_instance, 1);
+        assert_eq!(name.function_instance, 2);
+        assert_eq!(name.function, 0x1F);
+        assert_eq!(name.device_class, 0x02);
+        assert_eq!(name.device_class_instance, 3);
+        assert_eq!(name.industry_group, 2);
+        assert!(name.arbitrary_address_capable);
+
+        // Address Claimed (PGN 0xEE00): PF 0xEE, destination 0xFF, source 0x30.
+        let bytes = make_isobus_frame(0xEE, 0xFF, 0x30, &raw.to_le_bytes());
+        let frame = IsobusParser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.pgn, IsobusPgn::AddressClaim);
+        assert_eq!(frame.name, Some(name));
+        let dp = IsobusNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.device_id, "isobus:0x30:0AB:012345");
     }
 
     #[test]
@@ -283,7 +375,7 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         assert_eq!(frame.pgn, IsobusPgn::Pto);
         assert_eq!(frame.sa, 0x15);
-        assert_eq!(frame.implement_id, 0x2010); // bytes 10 20, little-endian
+        assert_eq!(frame.name, None);
     }
 
     #[test]
@@ -328,7 +420,7 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Isobus);
-        assert_eq!(dp.device_id, "isobus:0x30:0x0A00"); // bytes 00 0A, little-endian
+        assert_eq!(dp.device_id, "isobus:0x30");
         assert_eq!(dp.point_id, "pgn:TP.CM");
     }
 
@@ -338,7 +430,7 @@ mod tests {
         let state = IsobusState {
             connected: true,
             source_address: 0x20,
-            implement_id: 0x1000,
+            ecu_name: 0x1000,
             last_ok_timestamp: 1000,
             error_count: 0,
         };
@@ -358,7 +450,7 @@ mod tests {
         let state = IsobusState {
             connected: true,
             source_address: 0x20,
-            implement_id: 0,
+            ecu_name: 0,
             last_ok_timestamp: 1000,
             error_count: 0,
         };
