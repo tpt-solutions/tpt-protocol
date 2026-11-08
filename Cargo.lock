@@ -7727,8 +7727,8 @@ dependencies = [
 name = "tpt-protocol-telos"
 version = "0.1.0"
 dependencies = [
- "tpt-telos-ir",
- "tpt-telos-parser",
+ "tpt-telos-ir 0.2.0",
+ "tpt-telos-parser 0.1.1",
  "tpt-telos-verifier",
 ]
 
@@ -7788,7 +7788,16 @@ version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79ed71f7909410388ad7c5fd1ad2a75dec614df3da3ca95f518cf353cb1929b5"
 dependencies = [
- "tpt-telos-parser",
+ "tpt-telos-parser 0.1.1",
+]
+
+[[package]]
+name = "tpt-telos-ir"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aba4e4ad60613e4b13bd6af1faba85b00f31f30191d3d3fb712f580932dbaaaf"
+dependencies = [
+ "tpt-telos-parser 0.2.0",
 ]
 
 [[package]]
@@ -7798,12 +7807,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cfcba81db7f13cde60a3e0dd42d89ace568fbb1c370cea93a546400e10c18e6"
 
 [[package]]
+name = "tpt-telos-parser"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c292f1e13a1798884b6b93d18d9bc0b5cb5ccbc40064de123a5e0f71258b44b"
+
+[[package]]
 name = "tpt-telos-verifier"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "af1957b124fd903b8cd2ad5c78a8c54d35ca1fb469d1a8bee8e0eaeb5509b297"
 dependencies = [
- "tpt-telos-ir",
+ "tpt-telos-ir 0.1.1",
 ]
 
 [[package]]
