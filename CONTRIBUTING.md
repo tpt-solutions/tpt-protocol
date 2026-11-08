@@ -31,7 +31,7 @@ The `no_std` targets are checked in CI:
 
 ```bash
 rustup target add thumbv6m-none-eabi
-cargo build --workspace --target thumbv6m-none-eabi
+cargo build --workspace --target thumbv6m-none-eabi \n  --exclude tpt-protocol-daemon --exclude tpt-protocol-cli \n  --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --exclude tpt-protocol-telos
 ```
 
 License/cve/duplicate-crate hygiene is enforced by `cargo-deny` against
@@ -70,7 +70,7 @@ README, and registers it as a workspace member. Then:
 
 ## Commit / PR conventions
 
-- Keep changes focused; open PRs against `main`.
+- Keep changes focused; open PRs against `master`.
 - Ensure `cargo test`, `clippy -D warnings`, and `cargo fmt --check` pass.
 - Update `TODO.md` and `CHANGELOG.md` for user-facing changes.
 
