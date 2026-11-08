@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **NMEA:** GGA, RMC, DBT, VHW and MWV normalize to their real fields (`NmeaNormalizer::points`). Coordinates are
+  signed decimal degrees. Unknown sentences are labelled with their own letters, not `???`. A non-ASCII position
+  field no longer panics.
 - **Matter:** the parser decodes Matter TLV, the unsecured message and protocol headers, and Interaction Model
   ReportData attribute reports. The previous binary layout was not Matter. Secured sessions are flagged as encrypted.
   `MatterNormalizer::points` emits one point per scalar attribute.

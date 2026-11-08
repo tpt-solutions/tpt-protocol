@@ -5,7 +5,7 @@
 extern crate alloc;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -269,6 +269,66 @@ fn compute_nmea_checksum(body: &[u8]) -> u8 {
     body.iter().fold(0u8, |acc, &b| acc ^ b)
 }
 
+/// The sentence name for point ids. Unknown sentences keep their own letters
+/// (the `Display` form is `???`).
+fn sentence_label(sentence: &SentenceType) -> String {
+    match sentence {
+        SentenceType::Unknown(bytes) => {
+            let label: String = bytes
+                .iter()
+                .filter(|&&b| b != 0)
+                .map(|&b| if b.is_ascii_graphic() { b as char } else { '?' })
+                .collect();
+            if label.is_empty() {
+                "???".to_string()
+            } else {
+                label
+            }
+        }
+        known => known.to_string(),
+    }
+}
+
+/// Parses an NMEA coordinate (`ddmm.mmmm` or `dddmm.mmmm`) with its hemisphere
+/// into signed decimal degrees.
+fn coordinate(value: &str, hemisphere: &str, degree_digits: usize) -> Option<f64> {
+    if value.len() <= degree_digits {
+        return None;
+    }
+    // `get` returns None instead of panicking when the split is not on a character boundary.
+    let degrees: f64 = value.get(..degree_digits)?.parse().ok()?;
+    let minutes: f64 = value.get(degree_digits..)?.parse().ok()?;
+    let v = degrees + minutes / 60.0;
+    match hemisphere {
+        "N" | "E" => Some(v),
+        "S" | "W" => Some(-v),
+        _ => None,
+    }
+}
+
+fn point(
+    device_id: &str,
+    sentence: &str,
+    name: &str,
+    value: TupValue,
+    quality: Quality,
+    raw: &[u8],
+) -> DataPoint {
+    let mut dp = DataPoint::new(
+        SourceProtocol::Nmea,
+        device_id.to_string(),
+        format!("{sentence}.{name}"),
+        0,
+        value,
+        quality,
+    );
+    dp.raw = Some(raw.to_vec());
+    dp
+}
+
+/// Normalizes NMEA sentences into TUP DataPoints. Common sentences map to
+/// their real fields: GGA, RMC, DBT, VHW and MWV. Other sentences keep their
+/// first field.
 #[derive(Clone, Debug, Default)]
 pub struct NmeaNormalizer;
 
@@ -276,40 +336,122 @@ impl NmeaNormalizer {
     pub fn new() -> Self {
         Self
     }
+
+    /// One data point per decoded field. Missing or empty fields are skipped.
+    pub fn points(&self, frame: &NmeaFrame) -> Vec<DataPoint> {
+        let device_id = format!("nmea:{}", frame.talker);
+        let sentence = sentence_label(&frame.sentence);
+        let raw = frame.raw.as_bytes();
+        let f = |i: usize| -> Option<&str> {
+            frame
+                .fields
+                .get(i)
+                .map(|s| s.as_str())
+                .filter(|s| !s.is_empty())
+        };
+        let num = |i: usize| f(i).and_then(|s| s.parse::<f64>().ok());
+        let mut out = Vec::new();
+        let mut push = |name: &str, value: TupValue, q: Quality| {
+            out.push(point(&device_id, &sentence, name, value, q, raw));
+        };
+
+        match frame.sentence {
+            SentenceType::Gga => {
+                let good = Quality::Good;
+                if let (Some(lat), Some(lon)) = (
+                    f(1).zip(f(2)).and_then(|(v, h)| coordinate(v, h, 2)),
+                    f(3).zip(f(4)).and_then(|(v, h)| coordinate(v, h, 3)),
+                ) {
+                    push("latitude", TupValue::Float(lat), good);
+                    push("longitude", TupValue::Float(lon), good);
+                }
+                if let Some(q) = f(5).and_then(|s| s.parse::<i64>().ok()) {
+                    push("fix_quality", TupValue::Int(q), good);
+                }
+                if let Some(n) = f(6).and_then(|s| s.parse::<i64>().ok()) {
+                    push("satellites", TupValue::Int(n), good);
+                }
+                if let Some(alt) = num(8) {
+                    push("altitude_m", TupValue::Float(alt), good);
+                }
+            }
+            SentenceType::Rmc => {
+                // Status A = valid fix. Anything else is reported, but as Bad quality.
+                let q = if f(1) == Some("A") {
+                    Quality::Good
+                } else {
+                    Quality::Bad
+                };
+                if let (Some(lat), Some(lon)) = (
+                    f(2).zip(f(3)).and_then(|(v, h)| coordinate(v, h, 2)),
+                    f(4).zip(f(5)).and_then(|(v, h)| coordinate(v, h, 3)),
+                ) {
+                    push("latitude", TupValue::Float(lat), q);
+                    push("longitude", TupValue::Float(lon), q);
+                }
+                if let Some(v) = num(6) {
+                    push("speed_knots", TupValue::Float(v), q);
+                }
+                if let Some(v) = num(7) {
+                    push("course_deg", TupValue::Float(v), q);
+                }
+            }
+            SentenceType::Dbt => {
+                if let Some(v) = num(2) {
+                    push("depth_m", TupValue::Float(v), Quality::Good);
+                }
+            }
+            SentenceType::Vhw => {
+                if let Some(v) = num(0) {
+                    push("heading_true_deg", TupValue::Float(v), Quality::Good);
+                }
+                if let Some(v) = num(4) {
+                    push("speed_knots", TupValue::Float(v), Quality::Good);
+                }
+            }
+            SentenceType::Mwv => {
+                if let Some(v) = num(0) {
+                    push("wind_angle_deg", TupValue::Float(v), Quality::Good);
+                }
+                if let (Some(v), Some(unit)) = (num(2), f(3)) {
+                    push(
+                        &format!("wind_speed_{unit}"),
+                        TupValue::Float(v),
+                        Quality::Good,
+                    );
+                }
+            }
+            _ => {
+                if let Some(first) = frame.fields.first() {
+                    let value = match first.parse::<f64>() {
+                        Ok(v) => TupValue::Float(v),
+                        Err(_) => TupValue::Text(first.clone()),
+                    };
+                    push("field0", value, Quality::Good);
+                }
+            }
+        }
+        out
+    }
 }
 
 impl DataNormalizer for NmeaNormalizer {
     type Frame = NmeaFrame;
 
+    /// The first point of the sentence. A sentence with no decodable field
+    /// yields a point for the sentence itself, with value 0.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        let device_id = format!("nmea:{}", frame.talker);
-        let point_id = format!("{}", frame.sentence);
-        let timestamp = 0;
-
-        let value = if let Some(first) = frame.fields.first() {
-            if let Ok(v) = first.parse::<f64>() {
-                TupValue::Float(v)
-            } else {
-                TupValue::Text(first.clone())
-            }
-        } else {
-            TupValue::Int(0)
-        };
-
-        let mut dp = DataPoint::new(
-            SourceProtocol::Nmea,
-            device_id,
-            point_id,
-            timestamp,
-            value,
-            if frame.checksum_valid {
-                Quality::Good
-            } else {
-                Quality::Bad
-            },
-        );
-        dp.raw = Some(frame.raw.as_bytes().to_vec());
-        Ok(dp)
+        if let Some(first) = self.points(frame).into_iter().next() {
+            return Ok(first);
+        }
+        Ok(point(
+            &format!("nmea:{}", frame.talker),
+            &sentence_label(&frame.sentence),
+            "empty",
+            TupValue::Int(0),
+            Quality::Good,
+            frame.raw.as_bytes(),
+        ))
     }
 }
 
@@ -452,15 +594,185 @@ mod tests {
     }
 
     #[test]
+    fn gga_yields_position_quality_satellites_and_altitude() {
+        // Standard example: 48 deg 07.038 min N, 11 deg 31.000 min E.
+        let bytes = make_nmea(
+            "GP",
+            "GGA",
+            &[
+                "123519",
+                "4807.038",
+                "N",
+                "01131.000",
+                "E",
+                "1",
+                "08",
+                "0.9",
+                "545.4",
+                "M",
+                "46.9",
+                "M",
+                "",
+                "",
+            ],
+        );
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let points = NmeaNormalizer::new().points(&frame);
+        let get = |name: &str| {
+            points
+                .iter()
+                .find(|p| p.point_id == format!("GGA.{name}"))
+                .unwrap()
+                .value
+                .clone()
+        };
+        let TupValue::Float(lat) = get("latitude") else {
+            panic!()
+        };
+        let TupValue::Float(lon) = get("longitude") else {
+            panic!()
+        };
+        assert!((lat - 48.1173).abs() < 0.0001, "{lat}");
+        assert!((lon - 11.516666).abs() < 0.0001, "{lon}");
+        assert_eq!(get("fix_quality"), TupValue::Int(1));
+        assert_eq!(get("satellites"), TupValue::Int(8));
+        assert_eq!(get("altitude_m"), TupValue::Float(545.4));
+    }
+
+    #[test]
+    fn non_ascii_coordinate_does_not_panic() {
+        // 'é' is two bytes, so byte 2 falls inside it: the split must not panic.
+        assert_eq!(coordinate("1é2.5", "N", 2), None);
+        assert_eq!(coordinate("12é5", "N", 2), None);
+    }
+
+    #[test]
+    fn southern_and_western_coordinates_are_negative() {
+        let bytes = make_nmea(
+            "GP",
+            "GGA",
+            &[
+                "123519",
+                "3349.000",
+                "S",
+                "15112.000",
+                "W",
+                "1",
+                "08",
+                "0.9",
+                "10.0",
+                "M",
+                "",
+                "",
+                "",
+                "",
+            ],
+        );
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let points = NmeaNormalizer::new().points(&frame);
+        let lat = points
+            .iter()
+            .find(|p| p.point_id == "GGA.latitude")
+            .unwrap();
+        let lon = points
+            .iter()
+            .find(|p| p.point_id == "GGA.longitude")
+            .unwrap();
+        assert!(matches!(lat.value, TupValue::Float(v) if v < 0.0));
+        assert!(matches!(lon.value, TupValue::Float(v) if v < 0.0));
+    }
+
+    #[test]
+    fn rmc_without_a_valid_fix_is_bad_quality() {
+        let bytes = make_nmea(
+            "GP",
+            "RMC",
+            &[
+                "123519",
+                "V",
+                "4807.038",
+                "N",
+                "01131.000",
+                "E",
+                "0.5",
+                "84.4",
+                "230394",
+                "",
+                "",
+                "N",
+            ],
+        );
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let points = NmeaNormalizer::new().points(&frame);
+        assert!(points.iter().all(|p| p.quality == Quality::Bad));
+        assert!(points.iter().any(|p| p.point_id == "RMC.speed_knots"));
+    }
+
+    #[test]
+    fn rmc_with_a_valid_fix_is_good_quality() {
+        let bytes = make_nmea(
+            "GP",
+            "RMC",
+            &[
+                "123519",
+                "A",
+                "4807.038",
+                "N",
+                "01131.000",
+                "E",
+                "22.4",
+                "84.4",
+                "230394",
+                "",
+                "",
+                "A",
+            ],
+        );
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let points = NmeaNormalizer::new().points(&frame);
+        assert!(points.iter().all(|p| p.quality == Quality::Good));
+        assert!(points.iter().any(|p| p.point_id == "RMC.course_deg"));
+    }
+
+    #[test]
+    fn dbt_depth_is_in_metres() {
+        let bytes = make_nmea("SD", "DBT", &["12.4", "f", "3.8", "M", "2.1", "F"]);
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let dp = NmeaNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.point_id, "DBT.depth_m");
+        assert_eq!(dp.value, TupValue::Float(3.8));
+    }
+
+    #[test]
+    fn mwv_wind_speed_keeps_its_unit() {
+        let bytes = make_nmea("WI", "MWV", &["045", "R", "12.5", "N", "A"]);
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let points = NmeaNormalizer::new().points(&frame);
+        assert!(points
+            .iter()
+            .any(|p| p.point_id == "MWV.wind_speed_N" && p.value == TupValue::Float(12.5)));
+    }
+
+    #[test]
+    fn unknown_sentence_keeps_the_first_field() {
+        let bytes = make_nmea("GP", "ZDA", &["123519", "01", "01", "2024"]);
+        let frame = NmeaParser::new().parse(&bytes).unwrap();
+        let dp = NmeaNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.point_id, "ZDA.field0");
+    }
+
+    #[test]
     fn normalize_roundtrip() {
         let parser = NmeaParser::new();
         let normalizer = NmeaNormalizer::new();
+        // A malformed position (an extra comma) decodes no field, so the
+        // normalizer falls back to a point for the sentence itself.
         let bytes = make_nmea("GP", "GGA", &["123519", "4807.038,N"]);
         let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Nmea);
         assert_eq!(dp.device_id, "nmea:GP");
-        assert_eq!(dp.point_id, "GGA");
+        assert_eq!(dp.point_id, "GGA.empty");
     }
 
     #[test]
