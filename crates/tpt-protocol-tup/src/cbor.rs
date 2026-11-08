@@ -1,6 +1,7 @@
 use crate::{DataPoint, Quality, SourceProtocol, TupValue};
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 use minicbor::{decode, encode, Decode, Decoder, Encode, Encoder};
 
 // --- CBOR encode keys ---
@@ -92,9 +93,11 @@ impl Encode<()> for TupValue {
 
 impl Decode<'_, ()> for TupValue {
     fn decode(d: &mut Decoder<'_>, _ctx: &mut ()) -> Result<Self, decode::Error> {
-        let len = d.array()?;
-        if len.unwrap_or(2) < 2 {
-            return Err(decode::Error::message("tup value array too short"));
+        let len = d
+            .array()?
+            .ok_or_else(|| decode::Error::message("tup-value: indefinite-length array"))?;
+        if len != 2 {
+            return Err(decode::Error::message("tup-value: expected 2 elements"));
         }
         let type_tag = d.u64()?;
         match type_tag {
@@ -156,7 +159,11 @@ impl Encode<()> for DataPoint {
 
 impl Decode<'_, ()> for DataPoint {
     fn decode(d: &mut Decoder<'_>, _ctx: &mut ()) -> Result<Self, decode::Error> {
-        let len = d.map()?;
+        let len = d
+            .map()?
+            .ok_or_else(|| decode::Error::message("indefinite-length map is not canonical"))?;
+        // Keys 0..=8 may each appear once; unknown keys are skipped.
+        let mut seen = [false; 9];
 
         let mut schema_version = None;
         let mut source_protocol = None;
@@ -168,8 +175,14 @@ impl Decode<'_, ()> for DataPoint {
         let mut quality = None;
         let mut raw = None;
 
-        for _ in 0..len.unwrap_or(u64::MAX) {
+        for _ in 0..len {
             let key = d.u64()?;
+            // Checked conversion: `as usize` could truncate on 32-bit targets.
+            if let Some(slot) = usize::try_from(key).ok().and_then(|k| seen.get_mut(k)) {
+                if core::mem::replace(slot, true) {
+                    return Err(decode::Error::message("duplicate key in tup-message"));
+                }
+            }
             match key {
                 k if k == KEY_SCHEMA_VERSION => {
                     schema_version = Some(d.u64()?);
@@ -205,8 +218,11 @@ impl Decode<'_, ()> for DataPoint {
         }
 
         let schema_version = schema_version.unwrap_or(1);
+        if schema_version == 0 {
+            return Err(decode::Error::message("schema_version 0 is invalid"));
+        }
         if schema_version > crate::SCHEMA_VERSION {
-            return Err(decode::Error::message("unsupported schema version"));
+            return Err(decode::Error::message("unsupported schema_version"));
         }
 
         Ok(Self {
@@ -223,11 +239,14 @@ impl Decode<'_, ()> for DataPoint {
     }
 }
 
-pub fn encode_to_vec(dp: &DataPoint) -> Result<Vec<u8>, encode::Error<()>> {
+/// Encodes `dp` as canonical CBOR. Writing to a `Vec` cannot fail, so the
+/// error type is `Infallible` in practice; the encoder's own error is kept.
+pub fn encode_to_vec(dp: &DataPoint) -> Result<Vec<u8>, encode::Error<Infallible>> {
     let mut buf = Vec::new();
-    let mut encoder = Encoder::new(&mut buf);
-    dp.encode(&mut encoder, &mut ())
-        .map_err(|_| encode::Error::message("encode failed"))?;
+    {
+        let mut encoder = Encoder::new(&mut buf);
+        dp.encode(&mut encoder, &mut ())?;
+    }
     Ok(buf)
 }
 
@@ -384,5 +403,96 @@ mod tests {
         let buf = vec![0xff, 0xfe, 0xfd, 0xfc];
         let result = decode_from_bytes(&buf);
         assert!(result.is_err());
+    }
+
+    /// Encodes a full message whose `value` (key 5) is written by `value`.
+    fn message_with_value(value: impl Fn(&mut Encoder<&mut Vec<u8>>)) -> Vec<u8> {
+        let mut buf = Vec::new();
+        {
+            let mut e = Encoder::new(&mut buf);
+            e.map(7).unwrap();
+            e.u64(0).unwrap().u64(1).unwrap();
+            e.u64(1).unwrap().str("modbus").unwrap();
+            e.u64(2).unwrap().str("d").unwrap();
+            e.u64(3).unwrap().str("p").unwrap();
+            e.u64(4).unwrap().u64(1).unwrap();
+            e.u64(5).unwrap();
+            value(&mut e);
+            e.u64(7).unwrap().str("good").unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn manual_message_with_valid_value_decodes() {
+        let buf = message_with_value(|e| {
+            e.array(2).unwrap().u64(0).unwrap().i64(7).unwrap();
+        });
+        assert!(decode_from_bytes(&buf).is_ok());
+    }
+
+    #[test]
+    fn reject_indefinite_length_map() {
+        let mut buf = encode_to_vec(&sample_datapoint()).unwrap();
+        buf[0] = 0xbf; // indefinite-length map header
+        buf.push(0xff); // break
+        let err = decode_from_bytes(&buf).unwrap_err().to_string();
+        assert!(err.contains("indefinite"), "got: {err}");
+    }
+
+    #[test]
+    fn reject_indefinite_length_value_array() {
+        let buf = message_with_value(|e| {
+            e.begin_array()
+                .unwrap()
+                .u64(0)
+                .unwrap()
+                .i64(7)
+                .unwrap()
+                .end()
+                .unwrap();
+        });
+        let err = decode_from_bytes(&buf).unwrap_err().to_string();
+        assert!(err.contains("indefinite"), "got: {err}");
+    }
+
+    #[test]
+    fn reject_extra_value_array_elements() {
+        let buf = message_with_value(|e| {
+            e.array(3)
+                .unwrap()
+                .u64(0)
+                .unwrap()
+                .i64(7)
+                .unwrap()
+                .u64(0)
+                .unwrap();
+        });
+        let err = decode_from_bytes(&buf).unwrap_err().to_string();
+        assert!(err.contains("tup-value"), "got: {err}");
+    }
+
+    #[test]
+    fn reject_duplicate_key() {
+        let mut buf = Vec::new();
+        {
+            let mut e = Encoder::new(&mut buf);
+            e.map(2).unwrap();
+            e.u64(0).unwrap().u64(1).unwrap();
+            e.u64(0).unwrap().u64(1).unwrap();
+        }
+        let err = decode_from_bytes(&buf).unwrap_err();
+        assert!(err.to_string().contains("duplicate"), "got: {err}");
+    }
+
+    #[test]
+    fn reject_schema_version_zero() {
+        let mut buf = Vec::new();
+        {
+            let mut e = Encoder::new(&mut buf);
+            e.map(1).unwrap().u64(0).unwrap().u64(0).unwrap();
+        }
+        let err = decode_from_bytes(&buf).unwrap_err().to_string();
+        assert!(err.contains("schema_version"), "got: {err}");
     }
 }

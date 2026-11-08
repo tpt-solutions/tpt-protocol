@@ -111,6 +111,8 @@ fn quality_color(q: &Quality) -> Color {
         Quality::Bad => Color::Red,
         Quality::Uncertain => Color::Yellow,
         Quality::Stale => Color::DarkGray,
+        // `Quality` is non-exhaustive: an unknown future quality stays visible.
+        _ => Color::White,
     }
 }
 
@@ -125,6 +127,14 @@ fn parse_data_points(text: &str) -> Result<Vec<DataPoint>, String> {
                 points.push(json::from_json_str(&s)?);
             }
             Ok(points)
+        }
+        serde_json::Value::Object(ref obj)
+            if obj.get("type").and_then(|t| t.as_str()) == Some("lagged") =>
+        {
+            let dropped = obj.get("dropped").and_then(|d| d.as_u64()).unwrap_or(0);
+            Err(format!(
+                "daemon dropped {dropped} messages (client too slow)"
+            ))
         }
         _ => {
             let dp = json::from_json_str(text)?;
@@ -368,5 +378,11 @@ mod tests {
     #[test]
     fn truncate_short_is_untouched() {
         assert_eq!(truncate_to("abc", 18), "abc");
+    }
+
+    #[test]
+    fn lagged_notice_is_reported_not_parsed_as_points() {
+        let err = parse_data_points(r#"{"type":"lagged","dropped":7}"#).unwrap_err();
+        assert!(err.contains("dropped 7"), "got: {err}");
     }
 }

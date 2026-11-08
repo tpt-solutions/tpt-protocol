@@ -9,8 +9,8 @@ observation from one device over one protocol. It carries:
 - Rust structs that mirror the TUP CDDL schema documented in
   [`SPEC-TUP.md`](../../SPEC-TUP.md) and `schema/tup-v1.cddl`
 - **CBOR** binary encoding/decoding via [`minicbor`](https://docs.rs/minicbor)
-  (`#![no_std]` compatible, `alloc` only)
-- A **JSON** mirror text encoding for daemon/UI/WebSocket use (requires `std`)
+  (`#![no_std]` compatible; needs `alloc`)
+- A **JSON** mirror text encoding for daemon/UI/WebSocket use (requires the `std` feature)
 
 TUP is deliberately small and self-contained: every protocol parser in the
 suite produces `tpt_protocol_tup::DataPoint`, and every UI (CLI, embedded, web)
@@ -21,10 +21,11 @@ isomorphic and validated against `schema/tup-v1.schema.json` in tests.
 
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
-| `std`   | yes     | Enables the JSON module (`serde_json`) and `minicbor/std`. |
-| `alloc` | no      | Enables `alloc`-based types for `no_std` targets that provide an allocator. |
+| `std`   | no      | Enables the JSON module (`serde_json`, `hex`) and `minicbor/std`. |
+| `alloc` | no      | Enables `minicbor/alloc`. The crate always uses `alloc` (`Vec`, `String`), so an allocator is required. |
 
-- `#![no_std]` by default — only needs `alloc` (a `Vec`/`String`/`format!` heap).
+- `#![no_std]` with no default features. It always requires `alloc` (a
+  `Vec`/`String`/`format!` heap), so it is not a no-alloc crate.
 - Const `schema_version()` (currently `1`) on every `DataPoint` for forward
   compatibility; decoders reject a frame whose `schema_version` exceeds the
   compiled maximum.
@@ -55,8 +56,13 @@ The in-memory model (`lib.rs`) is independent of any codec. Each codec
   (`KEY_SCHEMA_VERSION = 0` … `KEY_RAW = 8`). `TupValue` is encoded as a
   2-element `[type_tag, payload]` array so the wire format stays self-describing.
 - `json.rs` (behind `std`) maps `DataPoint` to a `serde_json` document with
-  string `source_protocol`/`quality` fields. `Bytes` values and the optional
-  `raw` field are hex-encoded with a `0x` prefix; decoding strips that prefix.
+  string `source_protocol`/`quality` fields. The optional `raw` field is a
+  `0x`-prefixed hex string. A `Bytes` value is `{"bytes": "0x…"}`, and a
+  non-finite float is `{"float": "NaN" | "Infinity" | "-Infinity"}`, because
+  JSON has no bytes type and no NaN. A plain JSON string is always `Text`, so
+  every value type survives the round trip. Invalid hex and unsupported
+  `schema_version` values are errors. Known limit: the JSON parser reads integer
+  literals above the u64 range as floats, so use CBOR for those.
 
 ### `DataPoint` model
 
@@ -134,8 +140,7 @@ let decoded = cbor::decode_from_bytes(&encoded).unwrap();
 assert_eq!(dp, decoded);
 ```
 
-The same `DataPoint` through the JSON mirror (requires the default `std`
-feature):
+The same `DataPoint` through the JSON mirror (requires the `std` feature):
 
 ```rust
 use tpt_protocol_tup::{json, TupValue};
@@ -154,10 +159,9 @@ cargo run -p tpt-protocol-tup --example roundtrip
 
 ## `no_std`
 
-This crate is `#![no_std]` by default and only requires `alloc`. With the
-default `std` feature you also get the JSON mirror; for bare-metal targets
-without `std`, build with `--no-default-features --features alloc` to keep the
-CBOR codec while dropping the JSON/serde_json dependency:
+This crate is `#![no_std]` and always requires `alloc`. With the `std` feature
+you also get the JSON mirror. Without it, the crate builds with only the CBOR
+codec and no serde_json or hex dependency:
 
 ```bash
 cargo build -p tpt-protocol-tup --no-default-features --features alloc

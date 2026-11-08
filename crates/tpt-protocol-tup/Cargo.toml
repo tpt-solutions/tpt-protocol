@@ -13,14 +13,14 @@ repository.workspace = true
 
 [features]
 default = []
-std = ["alloc", "dep:serde", "dep:serde_json", "minicbor/std"]
+std = ["alloc", "dep:serde", "dep:serde_json", "dep:hex", "minicbor/std"]
 alloc = ["minicbor/alloc"]
 
 [dependencies]
 minicbor = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true, features = ["std"] }
-hex = { workspace = true }
+hex = { workspace = true, optional = true }
 
 [package.metadata.docs.rs]
 all-features = true

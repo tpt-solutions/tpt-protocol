@@ -15,6 +15,9 @@ mod quality;
 mod source_protocol;
 mod value;
 
+#[cfg(test)]
+mod cddl_conformance;
+
 const SCHEMA_VERSION: u64 = 1;
 
 #[derive(Clone, Debug, PartialEq)]

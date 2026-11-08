@@ -1,23 +1,30 @@
 ; TPT Unified Protocol (TUP) v1 — CDDL schema for the CBOR canonical encoding.
-; See SPEC-TUP.md for the human-readable description and JSON mirror.
+; See SPEC-TUP.md for the human-readable description. This file is normative
+; for CBOR. The JSON mirror uses the text field names in tup-v1.schema.json.
+;
+; Map keys are the small unsigned integers below. Encoders MUST emit key 0.
+; Decoders treat an absent key 0 as schema_version 1 and skip unknown keys
+; (forward compatibility). Encoders MUST NOT emit keys outside this list.
 
 tup-message = {
-  schema_version: uint .default 1,
-  source_protocol: source-protocol,
-  device_id: tstr,
-  point_id: tstr,
-  timestamp: uint,          ; unix epoch, milliseconds
-  value: tup-value,
-  ? unit: tstr,
-  quality: quality,
-  ? raw: bstr,
+  0 => uint,                ; schema_version (1 for this version)
+  1 => source-protocol,
+  2 => tstr,                ; device_id
+  3 => tstr,                ; point_id
+  4 => uint,                ; timestamp, unix epoch, milliseconds
+  5 => tup-value,
+  ? 6 => tstr,              ; unit
+  7 => quality,
+  ? 8 => bstr,              ; raw source frame
 }
+
+; Tagged union. The first element is the value type tag:
+; 0 = int, 1 = float, 2 = bool, 3 = text, 4 = bytes.
+tup-value = [0, int] / [1, float64] / [2, bool] / [3, tstr] / [4, bstr]
 
 source-protocol = "modbus" / "j1939" / "isobus" / "uds" / "canopen" /
                    "doip-someip" / "nmea" / "mavlink" / "bacnet" / "opcua" /
                    "dnp3" / "ethercat" / "sparkplugb" / "ocpp" /
                    "ieee11073-sdc" / "hl7v2" / "knx" / "matter-thread" / "coap"
-
-tup-value = int / float / bool / tstr / bstr
 
 quality = "good" / "bad" / "stale" / "uncertain"

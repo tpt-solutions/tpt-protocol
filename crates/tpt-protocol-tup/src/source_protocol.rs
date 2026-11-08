@@ -2,6 +2,7 @@ use core::fmt;
 use core::str::FromStr;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SourceProtocol {
     Modbus,
     J1939,
