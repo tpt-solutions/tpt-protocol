@@ -14,7 +14,7 @@ use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 /// J1939 Parameter Group Number (PGN) field.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Pgn {
-    /// Torque/Speed Control 1 (PGN 65281 / 0xFF01)
+    /// Torque/Speed Control 1 (PGN 0; PDU1, so the destination address is not part of the PGN)
     Tc1,
     /// Electronic Engine Controller 1 (PGN 61444 / 0xF004)
     Eec1,
@@ -22,8 +22,10 @@ pub enum Pgn {
     EngineTemp1,
     /// Fuel Economy (PGN 65257 / 0xFEE9)
     FuelEconomy,
-    /// Cab Interior Temperature (PGN 65269 / 0xFEF5)
-    CabTemp,
+    /// Cruise Control / Vehicle Speed (PGN 65265 / 0xFEF1)
+    Ccvs,
+    /// Ambient Conditions (PGN 65269 / 0xFEF5)
+    AmbientConditions,
     /// Any unrecognized PGN
     Raw(u32),
 }
@@ -31,11 +33,12 @@ pub enum Pgn {
 impl Pgn {
     fn from_u32(v: u32) -> Self {
         match v {
-            0xFF01 => Self::Tc1,
+            0x0000 => Self::Tc1,
             0xF004 => Self::Eec1,
             0xFEEE => Self::EngineTemp1,
             0xFEE9 => Self::FuelEconomy,
-            0xFEF5 => Self::CabTemp,
+            0xFEF1 => Self::Ccvs,
+            0xFEF5 => Self::AmbientConditions,
             other => Self::Raw(other),
         }
     }
@@ -48,7 +51,8 @@ impl fmt::Display for Pgn {
             Self::Eec1 => write!(f, "EEC1"),
             Self::EngineTemp1 => write!(f, "EngineTemp1"),
             Self::FuelEconomy => write!(f, "FuelEconomy"),
-            Self::CabTemp => write!(f, "CabTemp"),
+            Self::Ccvs => write!(f, "CCVS"),
+            Self::AmbientConditions => write!(f, "AmbientConditions"),
             Self::Raw(v) => write!(f, "Raw(0x{v:06X})"),
         }
     }
@@ -120,11 +124,10 @@ impl FrameParser for J1939Parser {
         let ps = ((raw_id >> 8) & 0xFF) as u8;
         let sa = (raw_id & 0xFF) as u8;
 
-        let pgn_val = if pf >= 240 {
-            ((dp as u32) << 16) | ((pf as u32) << 8) | (ps as u32)
-        } else {
-            ((dp as u32) << 16) | ((pf as u32) << 8)
-        };
+        // PGN = EDP, DP, PF, and PS only for PDU2 (PF >= 240). For PDU1, PS is the
+        // destination address and is not part of the PGN.
+        let ps_part = if pf >= 240 { ps as u32 } else { 0 };
+        let pgn_val = ((edp as u32) << 17) | ((dp as u32) << 16) | ((pf as u32) << 8) | ps_part;
         let pgn = Pgn::from_u32(pgn_val);
 
         let payload = if bytes.len() > 4 {
@@ -273,13 +276,47 @@ mod tests {
 
     #[test]
     fn valid_parse_tc1() {
-        // TC1: PGN 65281 = 0xFF01 → PF=0xFF, PS=0x01
+        // TC1 is PGN 0 (PDU1). PS = 0x17 is the destination address, not part of the PGN.
         let payload = &[0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        let bytes = make_j1939_frame(0xFF, 0x01, 0x11, payload);
+        let bytes = make_j1939_frame(0x00, 0x17, 0x11, payload);
         let parser = J1939Parser::new();
         let frame = parser.parse(&bytes).unwrap();
         assert_eq!(frame.pgn, Pgn::Tc1);
         assert_eq!(frame.sa, 0x11);
+    }
+
+    #[test]
+    fn pdu1_destination_address_is_not_part_of_the_pgn() {
+        // Request PGN 0xEA00 (PDU1): different destination addresses, same PGN.
+        for ps in [0x00u8, 0x25, 0xFF] {
+            let frame = J1939Parser::new()
+                .parse(&make_j1939_frame(0xEA, ps, 0x10, &[0; 3]))
+                .unwrap();
+            assert_eq!(frame.pgn, Pgn::Raw(0xEA00), "PS 0x{ps:02X}");
+        }
+    }
+
+    #[test]
+    fn edp_bit_is_part_of_the_pgn() {
+        // Same PF/PS as CCVS, but with EDP set: PGN 0x2FEF1 (EDP is PGN bit 17), not CCVS.
+        let mut can_id = (0x03u32 << 26) | (1 << 25) | (0xFE << 16) | (0xF1 << 8) | 0x10;
+        let bytes = can_id.to_be_bytes();
+        assert_eq!(
+            J1939Parser::new().parse(&bytes).unwrap().pgn,
+            Pgn::Raw(0x2FEF1)
+        );
+        can_id &= !(1 << 25); // EDP clear: CCVS
+        let frame = J1939Parser::new().parse(&can_id.to_be_bytes()).unwrap();
+        assert_eq!(frame.pgn, Pgn::Ccvs);
+        assert_eq!(frame.edp, 0);
+    }
+
+    #[test]
+    fn ambient_conditions_pgn_is_named() {
+        let frame = J1939Parser::new()
+            .parse(&make_j1939_frame(0xFE, 0xF5, 0x10, &[0; 8]))
+            .unwrap();
+        assert_eq!(frame.pgn, Pgn::AmbientConditions);
     }
 
     #[test]

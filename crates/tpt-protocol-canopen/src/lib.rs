@@ -20,6 +20,10 @@ pub enum CanOpenFunctionCode {
     Pdo1Rx,
     Pdo2Tx,
     Pdo2Rx,
+    Pdo3Tx,
+    Pdo3Rx,
+    Pdo4Tx,
+    Pdo4Rx,
     SdoTx,
     SdoRx,
     Heartbeat,
@@ -32,12 +36,15 @@ impl CanOpenFunctionCode {
     fn from_u8(v: u8) -> Self {
         match v {
             0x00 => Self::Nmt,
-            0x01 => Self::Sync,
             0x02 => Self::Timestamp,
             0x03 => Self::Pdo1Tx,
             0x04 => Self::Pdo1Rx,
             0x05 => Self::Pdo2Tx,
             0x06 => Self::Pdo2Rx,
+            0x07 => Self::Pdo3Tx,
+            0x08 => Self::Pdo3Rx,
+            0x09 => Self::Pdo4Tx,
+            0x0A => Self::Pdo4Rx,
             0x0B => Self::SdoTx,
             0x0C => Self::SdoRx,
             0x0E => Self::Heartbeat,
@@ -55,6 +62,10 @@ impl fmt::Display for CanOpenFunctionCode {
             Self::Pdo1Rx => write!(f, "PDO1-RX"),
             Self::Pdo2Tx => write!(f, "PDO2-TX"),
             Self::Pdo2Rx => write!(f, "PDO2-RX"),
+            Self::Pdo3Tx => write!(f, "PDO3-TX"),
+            Self::Pdo3Rx => write!(f, "PDO3-RX"),
+            Self::Pdo4Tx => write!(f, "PDO4-TX"),
+            Self::Pdo4Rx => write!(f, "PDO4-RX"),
             Self::SdoTx => write!(f, "SDO-TX"),
             Self::SdoRx => write!(f, "SDO-RX"),
             Self::Heartbeat => write!(f, "Heartbeat"),
@@ -62,6 +73,16 @@ impl fmt::Display for CanOpenFunctionCode {
             Self::Timestamp => write!(f, "Timestamp"),
             Self::Unknown(v) => write!(f, "Unknown(0x{v:02X})"),
         }
+    }
+}
+
+/// Function code 1 is SYNC only for node 0 (COB-ID 0x080). For any other node it is
+/// an Emergency message (COB-ID 0x081-0x0FF).
+fn classify(fc_raw: u8, node_id: u8) -> CanOpenFunctionCode {
+    match (fc_raw, node_id) {
+        (0x01, 0) => CanOpenFunctionCode::Sync,
+        (0x01, _) => CanOpenFunctionCode::Emergency,
+        _ => CanOpenFunctionCode::from_u8(fc_raw),
     }
 }
 
@@ -118,7 +139,7 @@ impl FrameParser for CanOpenParser {
         let fc_raw = ((cob_id >> 7) & 0x0F) as u8;
         let node_id = (cob_id & 0x7F) as u8;
 
-        let function_code = CanOpenFunctionCode::from_u8(fc_raw);
+        let function_code = classify(fc_raw, node_id);
 
         let payload = if bytes.len() > 2 {
             bytes[2..].to_vec()
@@ -262,6 +283,41 @@ mod tests {
         assert_eq!(frame.function_code, CanOpenFunctionCode::Pdo1Tx);
         assert_eq!(frame.node_id, 0x01);
         assert_eq!(frame.payload.len(), 4);
+    }
+
+    #[test]
+    fn function_codes_follow_cia_301() {
+        let cases: [(u16, CanOpenFunctionCode); 15] = [
+            (0x000, CanOpenFunctionCode::Nmt),
+            (0x080, CanOpenFunctionCode::Sync),
+            (0x081, CanOpenFunctionCode::Emergency),
+            (0x100, CanOpenFunctionCode::Timestamp),
+            (0x181, CanOpenFunctionCode::Pdo1Tx),
+            (0x201, CanOpenFunctionCode::Pdo1Rx),
+            (0x281, CanOpenFunctionCode::Pdo2Tx),
+            (0x301, CanOpenFunctionCode::Pdo2Rx),
+            (0x381, CanOpenFunctionCode::Pdo3Tx),
+            (0x401, CanOpenFunctionCode::Pdo3Rx),
+            (0x481, CanOpenFunctionCode::Pdo4Tx),
+            (0x501, CanOpenFunctionCode::Pdo4Rx),
+            (0x581, CanOpenFunctionCode::SdoTx),
+            (0x601, CanOpenFunctionCode::SdoRx),
+            (0x701, CanOpenFunctionCode::Heartbeat),
+        ];
+        for (cob_id, expected) in cases {
+            let frame = CanOpenParser::new().parse(&cob_id.to_be_bytes()).unwrap();
+            assert_eq!(frame.function_code, expected, "COB-ID 0x{cob_id:03X}");
+        }
+    }
+
+    #[test]
+    fn emergency_message_parses_its_eight_byte_payload() {
+        // Error code 0x8110 (little-endian), error register 0x01, manufacturer data.
+        let bytes = [0x00, 0x81, 0x10, 0x81, 0x01, 0x00, 0x00, 0x00, 0x00];
+        let frame = CanOpenParser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.function_code, CanOpenFunctionCode::Emergency);
+        assert_eq!(frame.node_id, 1);
+        assert_eq!(frame.payload.len(), 7);
     }
 
     #[test]

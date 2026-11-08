@@ -14,8 +14,14 @@ use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 /// ISOBUS (ISO 11783) Parameter Group Number.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum IsobusPgn {
-    /// Request for Rep (PGN 60416 / 0xEC00)
-    RequestForRep,
+    /// Transport Protocol connection management, TP.CM (PGN 60416 / 0xEC00)
+    TpCm,
+    /// Transport Protocol data transfer, TP.DT (PGN 60160 / 0xEB00)
+    TpDt,
+    /// Request (PGN 59904 / 0xEA00)
+    Request,
+    /// Address Claimed (PGN 60928 / 0xEE00)
+    AddressClaim,
     /// Power Take-Off (PGN 65202 / 0xFEBA)
     Pto,
     /// Working Set Master (PGN 65057 / 0xFE12)
@@ -29,7 +35,10 @@ pub enum IsobusPgn {
 impl IsobusPgn {
     fn from_u32(v: u32) -> Self {
         match v {
-            0xEC00 => Self::RequestForRep,
+            0xEC00 => Self::TpCm,
+            0xEB00 => Self::TpDt,
+            0xEA00 => Self::Request,
+            0xEE00 => Self::AddressClaim,
             0xFEBA => Self::Pto,
             0xFE12 => Self::WorkingSetMaster,
             0xFEAB => Self::TaskController,
@@ -41,7 +50,10 @@ impl IsobusPgn {
 impl fmt::Display for IsobusPgn {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::RequestForRep => write!(f, "RequestForRep"),
+            Self::TpCm => write!(f, "TP.CM"),
+            Self::TpDt => write!(f, "TP.DT"),
+            Self::Request => write!(f, "Request"),
+            Self::AddressClaim => write!(f, "AddressClaim"),
             Self::Pto => write!(f, "PTO"),
             Self::WorkingSetMaster => write!(f, "WorkingSetMaster"),
             Self::TaskController => write!(f, "TaskController"),
@@ -104,11 +116,9 @@ impl FrameParser for IsobusParser {
         let ps = ((raw_id >> 8) & 0xFF) as u8;
         let sa = (raw_id & 0xFF) as u8;
 
-        let pgn_val = if pf >= 240 {
-            ((dp as u32) << 16) | ((pf as u32) << 8) | (ps as u32)
-        } else {
-            ((dp as u32) << 16) | ((pf as u32) << 8)
-        };
+        // PS is part of the PGN only for PDU2 (PF >= 240); for PDU1 it is the destination address.
+        let ps_part = if pf >= 240 { ps as u32 } else { 0 };
+        let pgn_val = ((dp as u32) << 16) | ((pf as u32) << 8) | ps_part;
         let pgn = IsobusPgn::from_u32(pgn_val);
 
         let payload = if bytes.len() > 4 {
@@ -126,7 +136,7 @@ impl FrameParser for IsobusParser {
 
         // Extract implement_id from payload bytes 0-1, device_class from byte 2 (if available)
         let implement_id = if payload.len() >= 2 {
-            u16::from_be_bytes([payload[0], payload[1]])
+            u16::from_le_bytes([payload[0], payload[1]])
         } else {
             0
         };
@@ -250,8 +260,8 @@ mod tests {
     }
 
     #[test]
-    fn valid_parse_request_for_rep() {
-        // PGN 60416 = 0xEC00 → PF=0xEC, PS=0x00
+    fn valid_parse_tp_cm() {
+        // PGN 60416 = 0xEC00 (TP.CM) → PF=0xEC, PS=0x00
         let bytes = make_isobus_frame(
             0xEC,
             0x00,
@@ -260,9 +270,9 @@ mod tests {
         );
         let parser = IsobusParser::new();
         let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.pgn, IsobusPgn::RequestForRep);
+        assert_eq!(frame.pgn, IsobusPgn::TpCm);
         assert_eq!(frame.sa, 0x20);
-        assert_eq!(frame.implement_id, 0x0001);
+        assert_eq!(frame.implement_id, 0x0100); // bytes 00 01, little-endian
         assert_eq!(frame.device_class, 0x02);
     }
 
@@ -273,7 +283,7 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         assert_eq!(frame.pgn, IsobusPgn::Pto);
         assert_eq!(frame.sa, 0x15);
-        assert_eq!(frame.implement_id, 0x1020);
+        assert_eq!(frame.implement_id, 0x2010); // bytes 10 20, little-endian
     }
 
     #[test]
@@ -318,8 +328,8 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Isobus);
-        assert_eq!(dp.device_id, "isobus:0x30:0x000A");
-        assert_eq!(dp.point_id, "pgn:RequestForRep");
+        assert_eq!(dp.device_id, "isobus:0x30:0x0A00"); // bytes 00 0A, little-endian
+        assert_eq!(dp.point_id, "pgn:TP.CM");
     }
 
     #[test]
