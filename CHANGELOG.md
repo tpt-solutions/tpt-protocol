@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `FrameEncoder` trait in `tpt-protocol-core`, the inverse of `FrameParser`, and `ModbusEncoder`, with round-trip tests.
 - `cddl_conformance` tests check encoder output against the CDDL rules, and check that the
   protocol and quality lists match the Rust enums.
 - Structured Modbus MBAP property test (valid header, skewed length, mutation).

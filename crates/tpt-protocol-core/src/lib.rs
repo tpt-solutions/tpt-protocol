@@ -110,6 +110,25 @@ pub trait DataNormalizer {
     }
 }
 
+/// Encodes a frame back to wire bytes: the inverse of [`FrameParser::parse`].
+///
+/// Used for round-trip tests (encode, then parse, and compare) and for clients
+/// that send requests. An encoder must produce bytes that its parser accepts.
+///
+/// # Example
+///
+/// ```ignore
+/// let bytes = encoder.encode(&frame)?;
+/// assert_eq!(parser.parse(&bytes)?, frame);
+/// ```
+pub trait FrameEncoder {
+    /// The frame type this encoder writes.
+    type Frame;
+
+    /// Writes `frame` as wire bytes.
+    fn encode(&self, frame: &Self::Frame) -> Result<alloc::vec::Vec<u8>, Error>;
+}
+
 /// Protocol plugin trait for the daemon's plugin architecture.
 ///
 /// Implementations produce a stream of TUP `DataPoint` values

@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// Upper bound on pre-allocated registers from a wire-controlled quantity field.
@@ -370,7 +370,7 @@ fn pdu_data(frame: &ModbusFrame) -> Vec<u8> {
             d.extend_from_slice(&value.to_be_bytes());
             d
         }
-        ModbusFrame::ReadExceptionStatus { .. } => Vec::new(),
+        ModbusFrame::ReadExceptionStatus { data } => alloc::vec![*data],
         ModbusFrame::Diagnostics { sub_function, data } => {
             let mut d = Vec::with_capacity(2 + data.len());
             d.extend_from_slice(&sub_function.to_be_bytes());
@@ -612,6 +612,35 @@ fn check_quantity(func: u8, quantity: u16, max: u16) -> Result<(), Error> {
         )));
     }
     Ok(())
+}
+
+/// Encodes RTU frames: slave address, PDU and CRC. Requests and responses
+/// share the layout, so one encoder serves both directions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModbusEncoder;
+
+/// The longest RTU frame (ADU) is 256 bytes.
+const MAX_RTU_FRAME: usize = 256;
+
+impl FrameEncoder for ModbusEncoder {
+    type Frame = ModbusRtuFrame;
+
+    fn encode(&self, frame: &ModbusRtuFrame) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::with_capacity(MAX_RTU_FRAME);
+        out.push(frame.slave_address);
+        out.push(frame_to_func_code(&frame.frame));
+        out.extend_from_slice(&pdu_data(&frame.frame));
+        // Checked here, not in pdu_data: a longer read response would wrap its byte count.
+        if out.len() + 2 > MAX_RTU_FRAME {
+            return Err(Error::Parse(format!(
+                "Modbus RTU frame of {} bytes exceeds the {MAX_RTU_FRAME}-byte limit",
+                out.len() + 2
+            )));
+        }
+        let crc = crc16_modbus(&out);
+        out.extend_from_slice(&crc.to_le_bytes());
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1149,6 +1178,108 @@ mod tests {
         let (frame, consumed) = result.unwrap();
         assert_eq!(consumed, bytes.len());
         assert_eq!(frame.slave_address, 0x01);
+    }
+
+    #[test]
+    fn exception_status_response_round_trips() {
+        // Read Exception Status (0x07) carries one status byte; it used to encode as nothing.
+        let frame = ModbusRtuFrame {
+            slave_address: 0x01,
+            frame: ModbusFrame::ReadExceptionStatus { data: 0x5A },
+            crc: 0,
+            transaction_id: None,
+        };
+        let bytes = ModbusEncoder.encode(&frame).unwrap();
+        assert_eq!(bytes[..3], [0x01, 0x07, 0x5A]);
+        assert_eq!(
+            ModbusParser::response().parse(&bytes).unwrap().frame,
+            frame.frame
+        );
+    }
+
+    #[test]
+    fn requests_round_trip_through_the_encoder() {
+        let frames = [
+            ModbusFrame::ReadHoldingRegisters {
+                address: 0x006B,
+                quantity: 3,
+            },
+            ModbusFrame::WriteSingleCoil {
+                address: 0x00AC,
+                value: true,
+            },
+            ModbusFrame::WriteSingleRegister {
+                address: 0x0001,
+                value: 0x1234,
+            },
+            ModbusFrame::WriteMultipleRegisters {
+                address: 0x0010,
+                quantity: 2,
+                values: vec![0x000A, 0x0102],
+            },
+            ModbusFrame::Diagnostics {
+                sub_function: 0x0000,
+                data: vec![0xA5, 0x37],
+            },
+        ];
+        for frame in frames {
+            let wire = ModbusRtuFrame {
+                slave_address: 0x11,
+                frame: frame.clone(),
+                crc: 0,
+                transaction_id: None,
+            };
+            let bytes = ModbusEncoder.encode(&wire).unwrap();
+            let parsed = ModbusParser::new().parse(&bytes).unwrap();
+            assert_eq!(parsed.frame, frame, "{frame}");
+            assert_eq!(parsed.slave_address, 0x11);
+        }
+    }
+
+    #[test]
+    fn responses_round_trip_through_the_encoder() {
+        let frames = [
+            ModbusFrame::ReadResponse {
+                function_code: 0x03,
+                bytes: vec![0x00, 0x0A, 0x01, 0x02],
+            },
+            ModbusFrame::WriteMultipleResponse {
+                address: 0x0010,
+                quantity: 2,
+            },
+            ModbusFrame::Exception {
+                function_code: 0x03,
+                exception_code: 0x02,
+            },
+        ];
+        for frame in frames {
+            let wire = ModbusRtuFrame {
+                slave_address: 0x11,
+                frame: frame.clone(),
+                crc: 0,
+                transaction_id: None,
+            };
+            let bytes = ModbusEncoder.encode(&wire).unwrap();
+            assert_eq!(
+                ModbusParser::response().parse(&bytes).unwrap().frame,
+                frame,
+                "{frame}"
+            );
+        }
+    }
+
+    #[test]
+    fn encoder_rejects_frames_over_the_rtu_limit() {
+        let frame = ModbusRtuFrame {
+            slave_address: 0x01,
+            frame: ModbusFrame::ReadResponse {
+                function_code: 0x03,
+                bytes: vec![0; 300],
+            },
+            crc: 0,
+            transaction_id: None,
+        };
+        assert!(ModbusEncoder.encode(&frame).is_err());
     }
 
     #[test]
