@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Matter:** the parser decodes Matter TLV, the unsecured message and protocol headers, and Interaction Model
+  ReportData attribute reports. The previous binary layout was not Matter. Secured sessions are flagged as encrypted.
+  `MatterNormalizer::points` emits one point per scalar attribute.
 - **Sparkplug B:** the parser decodes the real Protobuf payload (metrics by datatype) and the `spBv1.0` topic.
   The previous binary framing was not Sparkplug. `SparkplugNormalizer::points` emits one point per metric.
 - **MAVLink:** every dialect message has its name and numeric id (previously four were named). Frames carry the
