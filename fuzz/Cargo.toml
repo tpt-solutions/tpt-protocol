@@ -1,0 +1,181 @@
+[package]
+name = "tpt-protocol-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+tpt-protocol-core = { path = "../crates/tpt-protocol-core" }
+tpt-protocol-tup = { path = "../crates/tpt-protocol-tup", features = ["std"] }
+tpt-protocol-bacnet = { path = "../crates/tpt-protocol-bacnet" }
+tpt-protocol-canopen = { path = "../crates/tpt-protocol-canopen" }
+tpt-protocol-coap = { path = "../crates/tpt-protocol-coap" }
+tpt-protocol-dnp3 = { path = "../crates/tpt-protocol-dnp3" }
+tpt-protocol-doip-someip = { path = "../crates/tpt-protocol-doip-someip" }
+tpt-protocol-ethercat = { path = "../crates/tpt-protocol-ethercat" }
+tpt-protocol-hl7v2 = { path = "../crates/tpt-protocol-hl7v2" }
+tpt-protocol-ieee11073-sdc = { path = "../crates/tpt-protocol-ieee11073-sdc" }
+tpt-protocol-isobus = { path = "../crates/tpt-protocol-isobus" }
+tpt-protocol-j1939 = { path = "../crates/tpt-protocol-j1939" }
+tpt-protocol-knx = { path = "../crates/tpt-protocol-knx" }
+tpt-protocol-matter-thread = { path = "../crates/tpt-protocol-matter-thread" }
+tpt-protocol-mavlink = { path = "../crates/tpt-protocol-mavlink" }
+tpt-protocol-modbus = { path = "../crates/tpt-protocol-modbus" }
+tpt-protocol-nmea = { path = "../crates/tpt-protocol-nmea" }
+tpt-protocol-ocpp = { path = "../crates/tpt-protocol-ocpp" }
+tpt-protocol-opcua = { path = "../crates/tpt-protocol-opcua" }
+tpt-protocol-sparkplugb = { path = "../crates/tpt-protocol-sparkplugb" }
+tpt-protocol-uds = { path = "../crates/tpt-protocol-uds" }
+
+[[bin]]
+name = "tup_cbor"
+path = "fuzz_targets/tup_cbor.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tup_json"
+path = "fuzz_targets/tup_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bacnet"
+path = "fuzz_targets/bacnet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "canopen"
+path = "fuzz_targets/canopen.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "coap"
+path = "fuzz_targets/coap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dnp3"
+path = "fuzz_targets/dnp3.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "doip-someip"
+path = "fuzz_targets/doip-someip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ethercat"
+path = "fuzz_targets/ethercat.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hl7v2"
+path = "fuzz_targets/hl7v2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ieee11073-sdc"
+path = "fuzz_targets/ieee11073-sdc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "isobus"
+path = "fuzz_targets/isobus.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "j1939"
+path = "fuzz_targets/j1939.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "knx"
+path = "fuzz_targets/knx.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "matter-thread"
+path = "fuzz_targets/matter-thread.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mavlink"
+path = "fuzz_targets/mavlink.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "modbus"
+path = "fuzz_targets/modbus.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nmea"
+path = "fuzz_targets/nmea.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ocpp"
+path = "fuzz_targets/ocpp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "opcua"
+path = "fuzz_targets/opcua.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sparkplugb"
+path = "fuzz_targets/sparkplugb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uds"
+path = "fuzz_targets/uds.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

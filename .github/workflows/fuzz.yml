@@ -1,0 +1,29 @@
+name: fuzz
+
+# Nightly fuzzing of every protocol parser and the TUP codecs. Runs on Linux
+# because cargo-fuzz (libFuzzer coverage) does not link on Windows MSVC.
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Fuzz each target for 60 seconds
+        run: |
+          for file in fuzz/fuzz_targets/*.rs; do
+            target=$(basename "$file" .rs)
+            cargo +nightly fuzz run --fuzz-dir fuzz "$target" -- -max_total_time=60
+          done
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: fuzz/artifacts
+          if-no-files-found: ignore
