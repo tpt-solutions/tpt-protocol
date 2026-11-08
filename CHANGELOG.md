@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Sparkplug B:** the parser decodes the real Protobuf payload (metrics by datatype) and the `spBv1.0` topic.
+  The previous binary framing was not Sparkplug. `SparkplugNormalizer::points` emits one point per metric.
 - **MAVLink:** every dialect message has its name and numeric id (previously four were named). Frames carry the
   decoded `MavMessage`, and the normalizer reads typed fields for HEARTBEAT, SYS_STATUS, ATTITUDE and GPS_RAW_INT. The
   v2 signature block is kept on signed frames. Trailing bytes after a frame are an error. `MavlinkMessageId` is replaced

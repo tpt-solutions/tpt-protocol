@@ -1,221 +1,433 @@
 //! Sparkplug B protocol implementation for MQTT-based IIoT infrastructure.
+//!
+//! A Sparkplug B message is a Protobuf `Payload` published on an MQTT topic of
+//! the form `spBv1.0/<group>/<message type>/<edge node>[/<device>]`. The topic
+//! carries the group, message type and node. The payload carries the metrics.
+//! This crate decodes both, without a Protobuf dependency.
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 extern crate alloc;
 
-use alloc::string::String;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
-/// Upper bound on pre-allocated metrics from a wire-controlled count field.
-const MAX_SPARKPLUG_METRICS: usize = 1024;
+/// Sparkplug B topic namespace.
+const NAMESPACE: &str = "spBv1.0";
 
+/// Sparkplug B message type, from the topic.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SparkplugMessageType {
-    NBIRTH,
-    DBIRTH,
-    NCMD,
-    DCMD,
-    NDATA,
-    DDATA,
-    NDEATH,
-    DDEATH,
+    NBirth,
+    NDeath,
+    DBirth,
+    DDeath,
+    NData,
+    DData,
+    NCmd,
+    DCmd,
 }
 
 impl SparkplugMessageType {
-    fn from_u8(v: u8) -> Option<Self> {
-        match v {
-            0 => Some(Self::NBIRTH),
-            1 => Some(Self::DBIRTH),
-            2 => Some(Self::NCMD),
-            3 => Some(Self::DCMD),
-            4 => Some(Self::NDATA),
-            5 => Some(Self::DDATA),
-            6 => Some(Self::NDEATH),
-            7 => Some(Self::DDEATH),
+    fn from_topic_segment(s: &str) -> Option<Self> {
+        match s {
+            "NBIRTH" => Some(Self::NBirth),
+            "NDEATH" => Some(Self::NDeath),
+            "DBIRTH" => Some(Self::DBirth),
+            "DDEATH" => Some(Self::DDeath),
+            "NDATA" => Some(Self::NData),
+            "DDATA" => Some(Self::DData),
+            "NCMD" => Some(Self::NCmd),
+            "DCMD" => Some(Self::DCmd),
             _ => None,
         }
     }
 
-    fn as_str(&self) -> &'static str {
+    /// Device-level messages carry a device id in the topic.
+    fn is_device_level(&self) -> bool {
+        matches!(self, Self::DBirth | Self::DDeath | Self::DData | Self::DCmd)
+    }
+
+    pub fn as_str(&self) -> &'static str {
         match self {
-            Self::NBIRTH => "NBIRTH",
-            Self::DBIRTH => "DBIRTH",
-            Self::NCMD => "NCMD",
-            Self::DCMD => "DCMD",
-            Self::NDATA => "NDATA",
-            Self::DDATA => "DDATA",
-            Self::NDEATH => "NDEATH",
-            Self::DDEATH => "DDEATH",
+            Self::NBirth => "NBIRTH",
+            Self::NDeath => "NDEATH",
+            Self::DBirth => "DBIRTH",
+            Self::DDeath => "DDEATH",
+            Self::NData => "NDATA",
+            Self::DData => "DDATA",
+            Self::NCmd => "NCMD",
+            Self::DCmd => "DCMD",
         }
     }
 }
 
+/// A parsed `spBv1.0` topic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparkplugTopic {
+    pub group_id: String,
+    pub message_type: SparkplugMessageType,
+    pub edge_node_id: String,
+    pub device_id: Option<String>,
+}
+
+impl SparkplugTopic {
+    /// Parses an MQTT topic. Wildcards are rejected: a topic must name one node.
+    pub fn parse(topic: &str) -> Result<Self, Error> {
+        let rest = topic
+            .strip_prefix(NAMESPACE)
+            .and_then(|r| r.strip_prefix('/'))
+            .ok_or_else(|| Error::Parse(format!("Sparkplug topic must start with {NAMESPACE}/")))?;
+        let segments: Vec<&str> = rest.split('/').collect();
+        if segments
+            .iter()
+            .any(|s| s.is_empty() || s.contains(['+', '#']))
+        {
+            return Err(Error::Parse(
+                "Sparkplug topic segments must be non-empty and literal".into(),
+            ));
+        }
+        let message_type =
+            SparkplugMessageType::from_topic_segment(segments[1]).ok_or_else(|| {
+                Error::Parse(format!("unknown Sparkplug message type '{}'", segments[1]))
+            })?;
+        let expected = if message_type.is_device_level() { 4 } else { 3 };
+        if segments.len() != expected {
+            return Err(Error::Parse(format!(
+                "{} topic needs {expected} segments after {NAMESPACE}, found {}",
+                message_type.as_str(),
+                segments.len()
+            )));
+        }
+        Ok(Self {
+            group_id: segments[0].to_string(),
+            message_type,
+            edge_node_id: segments[2].to_string(),
+            device_id: segments.get(3).map(|d| d.to_string()),
+        })
+    }
+}
+
+/// One metric of a payload.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Metric {
     pub name: String,
-    pub data_type: u8,
-    pub value: TupValue,
+    pub alias: Option<u64>,
+    pub timestamp: Option<u64>,
+    /// Sparkplug datatype number (see the Sparkplug B specification).
+    pub datatype: u32,
+    /// The decoded value. `None` for null metrics and for structured types
+    /// (DataSet, Template) that are not decoded here.
+    pub value: Option<TupValue>,
 }
 
+/// A decoded Sparkplug B message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SparkplugFrame {
-    pub version: u8,
-    pub message_type: SparkplugMessageType,
-    pub seq: u16,
-    pub timestamp: u64,
+    /// Present when the frame was decoded with its topic.
+    pub topic: Option<SparkplugTopic>,
+    pub timestamp: Option<u64>,
+    /// Sequence number, 0-255.
+    pub seq: Option<u64>,
+    pub uuid: Option<String>,
     pub metrics: Vec<Metric>,
+    pub body: Option<Vec<u8>>,
 }
 
+/// A Protobuf field value on the wire.
+#[derive(Clone, Copy)]
+enum Wire<'a> {
+    Varint(u64),
+    Fixed64(u64),
+    Bytes(&'a [u8]),
+    Fixed32(u32),
+}
+
+fn read_varint(buf: &[u8], pos: &mut usize) -> Result<u64, Error> {
+    let mut value = 0u64;
+    for i in 0..10 {
+        let byte = *buf
+            .get(*pos)
+            .ok_or_else(|| Error::Parse("Protobuf varint truncated".into()))?;
+        *pos += 1;
+        value |= ((byte & 0x7F) as u64) << (7 * i);
+        if byte & 0x80 == 0 {
+            return Ok(value);
+        }
+    }
+    Err(Error::Parse(
+        "Protobuf varint is longer than 10 bytes".into(),
+    ))
+}
+
+/// Calls `f` for each field of a Protobuf message. Groups (wire types 3 and 4)
+/// are rejected, as Sparkplug does not use them.
+fn for_each_field<'a>(
+    buf: &'a [u8],
+    mut f: impl FnMut(u64, Wire<'a>) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let mut pos = 0usize;
+    while pos < buf.len() {
+        let key = read_varint(buf, &mut pos)?;
+        let field = key >> 3;
+        if field == 0 {
+            return Err(Error::Parse("Protobuf field number 0".into()));
+        }
+        let value = match key & 0x07 {
+            0 => Wire::Varint(read_varint(buf, &mut pos)?),
+            1 => {
+                let bytes = take(buf, &mut pos, 8)?;
+                Wire::Fixed64(u64::from_le_bytes(bytes.try_into().unwrap_or([0; 8])))
+            }
+            2 => {
+                let len = read_varint(buf, &mut pos)?;
+                let len = usize::try_from(len)
+                    .map_err(|_| Error::Parse("Protobuf length too large".into()))?;
+                Wire::Bytes(take(buf, &mut pos, len)?)
+            }
+            5 => {
+                let bytes = take(buf, &mut pos, 4)?;
+                Wire::Fixed32(u32::from_le_bytes(bytes.try_into().unwrap_or([0; 4])))
+            }
+            other => {
+                return Err(Error::Parse(format!(
+                    "Protobuf wire type {other} is not supported"
+                )))
+            }
+        };
+        f(field, value)?;
+    }
+    Ok(())
+}
+
+fn take<'a>(buf: &'a [u8], pos: &mut usize, len: usize) -> Result<&'a [u8], Error> {
+    let end = pos
+        .checked_add(len)
+        .filter(|&e| e <= buf.len())
+        .ok_or_else(|| Error::Parse("Protobuf field runs past the end of the message".into()))?;
+    let slice = &buf[*pos..end];
+    *pos = end;
+    Ok(slice)
+}
+
+fn want_varint(field: u64, w: Wire<'_>) -> Result<u64, Error> {
+    match w {
+        Wire::Varint(v) => Ok(v),
+        _ => Err(Error::Parse(format!(
+            "Protobuf field {field} must be a varint"
+        ))),
+    }
+}
+
+fn want_bool(field: u64, w: Wire<'_>) -> Result<bool, Error> {
+    Ok(want_varint(field, w)? != 0)
+}
+
+fn want_bytes<'a>(field: u64, w: Wire<'a>) -> Result<&'a [u8], Error> {
+    match w {
+        Wire::Bytes(b) => Ok(b),
+        _ => Err(Error::Parse(format!(
+            "Protobuf field {field} must be length-delimited"
+        ))),
+    }
+}
+
+fn want_text(field: u64, w: Wire<'_>) -> Result<String, Error> {
+    let bytes = want_bytes(field, w)?;
+    core::str::from_utf8(bytes)
+        .map(|s| s.to_string())
+        .map_err(|_| Error::Parse(format!("Protobuf field {field} is not UTF-8")))
+}
+
+/// The value field of a metric, before conversion by datatype.
+enum RawValue {
+    Int(u32),
+    Long(u64),
+    Float(f32),
+    Double(f64),
+    Bool(bool),
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+/// Sparkplug datatype numbers.
+mod datatype {
+    pub const INT8: u32 = 1;
+    pub const INT16: u32 = 2;
+    pub const INT32: u32 = 3;
+    pub const INT64: u32 = 4;
+    pub const UINT8: u32 = 5;
+    pub const UINT16: u32 = 6;
+    pub const UINT32: u32 = 7;
+    pub const UINT64: u32 = 8;
+    pub const FLOAT: u32 = 9;
+    pub const DOUBLE: u32 = 10;
+    pub const BOOLEAN: u32 = 11;
+    pub const STRING: u32 = 12;
+    pub const DATETIME: u32 = 13;
+    pub const TEXT: u32 = 14;
+    pub const UUID: u32 = 15;
+    pub const DATASET: u32 = 16;
+    pub const BYTES: u32 = 17;
+    pub const FILE: u32 = 18;
+    pub const TEMPLATE: u32 = 19;
+}
+
+fn mismatch(datatype: u32) -> Error {
+    Error::Parse(format!(
+        "Sparkplug value does not match datatype {datatype}"
+    ))
+}
+
+/// Converts a raw value by datatype. Integers that do not fit `i64` are errors,
+/// not silent changes.
+fn convert(datatype: u32, raw: RawValue) -> Result<Option<TupValue>, Error> {
+    let int = |v: i64| Ok(Some(TupValue::Int(v)));
+    match (datatype, raw) {
+        (datatype::INT8, RawValue::Int(v)) => int((v as u8 as i8) as i64),
+        (datatype::INT16, RawValue::Int(v)) => int((v as u16 as i16) as i64),
+        (datatype::INT32, RawValue::Int(v)) => int((v as i32) as i64),
+        (datatype::UINT8, RawValue::Int(v)) => int((v as u8) as i64),
+        (datatype::UINT16, RawValue::Int(v)) => int((v as u16) as i64),
+        (datatype::UINT32, RawValue::Int(v)) => int(v as i64),
+        (datatype::INT64, RawValue::Long(v)) => int(v as i64),
+        (datatype::DATETIME, RawValue::Long(v)) => int(v as i64),
+        (datatype::UINT64, RawValue::Long(v)) => {
+            if v > i64::MAX as u64 {
+                return Err(Error::Parse(
+                    "Sparkplug UInt64 value exceeds the i64 range".into(),
+                ));
+            }
+            int(v as i64)
+        }
+        (datatype::FLOAT, RawValue::Float(v)) => Ok(Some(TupValue::Float(v as f64))),
+        (datatype::DOUBLE, RawValue::Double(v)) => Ok(Some(TupValue::Float(v))),
+        (datatype::BOOLEAN, RawValue::Bool(v)) => Ok(Some(TupValue::Bool(v))),
+        (datatype::STRING | datatype::TEXT | datatype::UUID, RawValue::Text(v)) => {
+            Ok(Some(TupValue::Text(v)))
+        }
+        (datatype::BYTES | datatype::FILE, RawValue::Bytes(v)) => Ok(Some(TupValue::Bytes(v))),
+        // Structured types and unknown datatypes are not decoded.
+        (datatype::DATASET | datatype::TEMPLATE | 0, _) => Ok(None),
+        (other, _) => Err(mismatch(other)),
+    }
+}
+
+fn decode_metric(bytes: &[u8]) -> Result<Metric, Error> {
+    let mut name = None;
+    let mut alias = None;
+    let mut timestamp = None;
+    let mut datatype_value = 0u32;
+    let mut is_null = false;
+    let mut raw: Option<RawValue> = None;
+
+    for_each_field(bytes, |field, w| {
+        match field {
+            1 => name = Some(want_text(field, w)?),
+            2 => alias = Some(want_varint(field, w)?),
+            3 => timestamp = Some(want_varint(field, w)?),
+            4 => {
+                let v = want_varint(field, w)?;
+                datatype_value = u32::try_from(v)
+                    .map_err(|_| Error::Parse("Sparkplug datatype out of range".into()))?;
+            }
+            5 | 6 => {
+                // is_historical, is_transient: informational only.
+                want_bool(field, w)?;
+            }
+            7 => is_null = want_bool(field, w)?,
+            10 => raw = Some(RawValue::Int(want_varint(field, w)? as u32)),
+            11 => raw = Some(RawValue::Long(want_varint(field, w)?)),
+            12 => match w {
+                Wire::Fixed32(v) => raw = Some(RawValue::Float(f32::from_bits(v))),
+                _ => return Err(Error::Parse("Sparkplug float must be fixed32".into())),
+            },
+            13 => match w {
+                Wire::Fixed64(v) => raw = Some(RawValue::Double(f64::from_bits(v))),
+                _ => return Err(Error::Parse("Sparkplug double must be fixed64".into())),
+            },
+            14 => raw = Some(RawValue::Bool(want_bool(field, w)?)),
+            15 => raw = Some(RawValue::Text(want_text(field, w)?)),
+            16 => raw = Some(RawValue::Bytes(want_bytes(field, w)?.to_vec())),
+            // Metadata, properties, dataset, template and extension: not decoded.
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    let name = name.ok_or_else(|| Error::Parse("Sparkplug metric has no name".into()))?;
+    let value = match (is_null, raw) {
+        (true, _) | (_, None) => None,
+        (false, Some(v)) => convert(datatype_value, v)?,
+    };
+    Ok(Metric {
+        name,
+        alias,
+        timestamp,
+        datatype: datatype_value,
+        value,
+    })
+}
+
+/// Decodes a Sparkplug B payload (the Protobuf `Payload` message).
+fn decode_payload(bytes: &[u8], topic: Option<SparkplugTopic>) -> Result<SparkplugFrame, Error> {
+    let mut frame = SparkplugFrame {
+        topic,
+        timestamp: None,
+        seq: None,
+        uuid: None,
+        metrics: Vec::new(),
+        body: None,
+    };
+    for_each_field(bytes, |field, w| {
+        match field {
+            1 => frame.timestamp = Some(want_varint(field, w)?),
+            2 => frame.metrics.push(decode_metric(want_bytes(field, w)?)?),
+            3 => {
+                let seq = want_varint(field, w)?;
+                if seq > 255 {
+                    return Err(Error::Parse("Sparkplug seq must be 0-255".into()));
+                }
+                frame.seq = Some(seq);
+            }
+            4 => frame.uuid = Some(want_text(field, w)?),
+            5 => frame.body = Some(want_bytes(field, w)?.to_vec()),
+            // Unknown fields are skipped, as Protobuf requires.
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(frame)
+}
+
+/// Decodes Sparkplug B payloads. The payload bytes alone are enough; use
+/// [`decode`] to attach the topic.
 pub struct SparkplugParser;
 
 impl FrameParser for SparkplugParser {
     type Frame = SparkplugFrame;
 
     fn parse(&self, bytes: &[u8]) -> Result<Self::Frame, Error> {
-        if bytes.len() < 14 {
-            return Err(Error::Parse("frame too short".into()));
-        }
-
-        let version = bytes[0];
-        let message_type = SparkplugMessageType::from_u8(bytes[1])
-            .ok_or_else(|| Error::Parse("invalid message type".into()))?;
-        let seq = u16::from_be_bytes([bytes[2], bytes[3]]);
-        if seq > 255 {
-            return Err(Error::Parse("seq number out of range (0-255)".into()));
-        }
-        let timestamp = u64::from_be_bytes([
-            bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11],
-        ]);
-        let metric_count = u16::from_be_bytes([bytes[12], bytes[13]]);
-        let mut offset = 14usize;
-        let mut metrics = Vec::with_capacity((metric_count as usize).min(MAX_SPARKPLUG_METRICS));
-
-        for _ in 0..metric_count {
-            if offset >= bytes.len() {
-                return Err(Error::Parse("truncated metric header".into()));
-            }
-            let name_len = bytes[offset] as usize;
-            offset += 1;
-            if offset + name_len > bytes.len() {
-                return Err(Error::Parse("truncated metric name".into()));
-            }
-            let name = core::str::from_utf8(&bytes[offset..offset + name_len])
-                .map_err(|_| Error::Parse("invalid metric name utf-8".into()))?
-                .into();
-            offset += name_len;
-
-            if offset >= bytes.len() {
-                return Err(Error::Parse("truncated metric data type".into()));
-            }
-            let data_type = bytes[offset];
-            offset += 1;
-
-            let value = match data_type {
-                0 => {
-                    if offset + 4 > bytes.len() {
-                        return Err(Error::Parse("truncated int32 value".into()));
-                    }
-                    let v = i32::from_be_bytes([
-                        bytes[offset],
-                        bytes[offset + 1],
-                        bytes[offset + 2],
-                        bytes[offset + 3],
-                    ]);
-                    offset += 4;
-                    TupValue::Int(v as i64)
-                }
-                1 => {
-                    if offset + 8 > bytes.len() {
-                        return Err(Error::Parse("truncated int64 value".into()));
-                    }
-                    let v = i64::from_be_bytes([
-                        bytes[offset],
-                        bytes[offset + 1],
-                        bytes[offset + 2],
-                        bytes[offset + 3],
-                        bytes[offset + 4],
-                        bytes[offset + 5],
-                        bytes[offset + 6],
-                        bytes[offset + 7],
-                    ]);
-                    offset += 8;
-                    TupValue::Int(v)
-                }
-                2 => {
-                    if offset + 4 > bytes.len() {
-                        return Err(Error::Parse("truncated float value".into()));
-                    }
-                    let bits = u32::from_be_bytes([
-                        bytes[offset],
-                        bytes[offset + 1],
-                        bytes[offset + 2],
-                        bytes[offset + 3],
-                    ]);
-                    offset += 4;
-                    TupValue::Float(f32::from_bits(bits) as f64)
-                }
-                3 => {
-                    if offset + 8 > bytes.len() {
-                        return Err(Error::Parse("truncated double value".into()));
-                    }
-                    let bits = u64::from_be_bytes([
-                        bytes[offset],
-                        bytes[offset + 1],
-                        bytes[offset + 2],
-                        bytes[offset + 3],
-                        bytes[offset + 4],
-                        bytes[offset + 5],
-                        bytes[offset + 6],
-                        bytes[offset + 7],
-                    ]);
-                    offset += 8;
-                    TupValue::Float(f64::from_bits(bits))
-                }
-                4 => {
-                    if offset >= bytes.len() {
-                        return Err(Error::Parse("truncated bool value".into()));
-                    }
-                    let v = bytes[offset] != 0;
-                    offset += 1;
-                    TupValue::Bool(v)
-                }
-                5 => {
-                    if offset + 2 > bytes.len() {
-                        return Err(Error::Parse("truncated string length".into()));
-                    }
-                    let slen = u16::from_be_bytes([bytes[offset], bytes[offset + 1]]) as usize;
-                    offset += 2;
-                    if offset + slen > bytes.len() {
-                        return Err(Error::Parse("truncated string value".into()));
-                    }
-                    let s = core::str::from_utf8(&bytes[offset..offset + slen])
-                        .map_err(|_| Error::Parse("invalid string utf-8".into()))?
-                        .into();
-                    offset += slen;
-                    TupValue::Text(s)
-                }
-                _ => return Err(Error::Parse("unknown data type".into())),
-            };
-
-            metrics.push(Metric {
-                name,
-                data_type,
-                value,
-            });
-        }
-
-        Ok(SparkplugFrame {
-            version,
-            message_type,
-            seq,
-            timestamp,
-            metrics,
-        })
+        decode_payload(bytes, None)
     }
+}
+
+/// Decodes a payload together with its MQTT topic.
+pub fn decode(topic: &str, payload: &[u8]) -> Result<SparkplugFrame, Error> {
+    let topic = SparkplugTopic::parse(topic)?;
+    decode_payload(payload, Some(topic))
+}
+
+/// Sparkplug B connection state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SparkplugConnectionState {
+    pub connected: bool,
+    pub last_seq: u16,
+    pub birth_received: bool,
 }
 
 pub struct SparkplugValidator;
@@ -234,41 +446,60 @@ impl StateValidator for SparkplugValidator {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct SparkplugConnectionState {
-    pub connected: bool,
-    pub last_seq: u16,
-    pub birth_received: bool,
-}
-
+/// Normalizes Sparkplug B metrics into TUP DataPoints. The device is the
+/// topic's group and edge node (and device, when present). The point is the
+/// metric name.
 pub struct SparkplugNormalizer;
+
+impl SparkplugNormalizer {
+    fn device_id(frame: &SparkplugFrame) -> String {
+        match &frame.topic {
+            Some(t) => match &t.device_id {
+                Some(d) => format!("sparkplug:{}/{}/{}", t.group_id, t.edge_node_id, d),
+                None => format!("sparkplug:{}/{}", t.group_id, t.edge_node_id),
+            },
+            None => "sparkplug:unknown".to_string(),
+        }
+    }
+
+    /// One data point per metric that has a value. Null metrics and
+    /// structured types are skipped.
+    pub fn points(&self, frame: &SparkplugFrame) -> Vec<DataPoint> {
+        let device_id = Self::device_id(frame);
+        frame
+            .metrics
+            .iter()
+            .filter_map(|m| {
+                let value = m.value.clone()?;
+                Some(DataPoint::new(
+                    SourceProtocol::Sparkplugb,
+                    device_id.clone(),
+                    m.name.clone(),
+                    m.timestamp.or(frame.timestamp).unwrap_or(0),
+                    value,
+                    Quality::Good,
+                ))
+            })
+            .collect()
+    }
+}
 
 impl DataNormalizer for SparkplugNormalizer {
     type Frame = SparkplugFrame;
 
+    /// The first metric with a value. A payload with no such metric (for
+    /// example a death certificate) yields a point for its sequence number.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        let device_id = alloc::format!("sparkplug/{}", frame.message_type.as_str());
-        let point_id = if frame.metrics.is_empty() {
-            alloc::format!("seq:{}", frame.seq)
-        } else {
-            frame.metrics[0].name.clone()
-        };
-
-        let value = if frame.metrics.is_empty() {
-            TupValue::Int(frame.seq as i64)
-        } else {
-            frame.metrics[0].value.clone()
-        };
-
-        let quality = Quality::Good;
-
+        if let Some(point) = self.points(frame).into_iter().next() {
+            return Ok(point);
+        }
         Ok(DataPoint::new(
             SourceProtocol::Sparkplugb,
-            device_id,
-            point_id,
-            frame.timestamp,
-            value,
-            quality,
+            Self::device_id(frame),
+            format!("seq:{}", frame.seq.unwrap_or(0)),
+            frame.timestamp.unwrap_or(0),
+            TupValue::Int(frame.seq.unwrap_or(0) as i64),
+            Quality::Good,
         ))
     }
 }
@@ -276,114 +507,228 @@ impl DataNormalizer for SparkplugNormalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
-    use tpt_protocol_core::FrameParser;
 
-    fn make_valid_frame_bytes() -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.push(1); // version
-        buf.push(0); // NBIRTH
-        buf.extend(&0u16.to_be_bytes()); // seq = 0
-        buf.extend(&1000000u64.to_be_bytes()); // timestamp
-        buf.extend(&1u16.to_be_bytes()); // 1 metric
-        buf.push(4); // name_len
-        buf.extend(b"temp"); // name
-        buf.push(3); // data_type = Double
-        buf.extend(&2.5f64.to_bits().to_be_bytes()); // value
-        buf
+    fn put_varint(out: &mut Vec<u8>, mut v: u64) {
+        loop {
+            let byte = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+
+    fn put_key(out: &mut Vec<u8>, field: u64, wire: u64) {
+        put_varint(out, (field << 3) | wire);
+    }
+
+    fn put_varint_field(out: &mut Vec<u8>, field: u64, v: u64) {
+        put_key(out, field, 0);
+        put_varint(out, v);
+    }
+
+    fn put_bytes_field(out: &mut Vec<u8>, field: u64, data: &[u8]) {
+        put_key(out, field, 2);
+        put_varint(out, data.len() as u64);
+        out.extend_from_slice(data);
+    }
+
+    /// A Metric with a name, datatype and value written by `value`.
+    fn metric(name: &str, datatype: u64, value: impl FnOnce(&mut Vec<u8>)) -> Vec<u8> {
+        let mut m = Vec::new();
+        put_bytes_field(&mut m, 1, name.as_bytes());
+        put_varint_field(&mut m, 4, datatype);
+        value(&mut m);
+        m
+    }
+
+    fn payload(metrics: &[Vec<u8>], seq: u64) -> Vec<u8> {
+        let mut p = Vec::new();
+        put_varint_field(&mut p, 1, 1_700_000_000_000);
+        for m in metrics {
+            put_bytes_field(&mut p, 2, m);
+        }
+        put_varint_field(&mut p, 3, seq);
+        p
+    }
+
+    fn double_metric(name: &str, v: f64) -> Vec<u8> {
+        metric(name, 10, |m| {
+            put_key(m, 13, 1);
+            m.extend_from_slice(&v.to_bits().to_le_bytes());
+        })
     }
 
     #[test]
-    fn valid_parse() {
-        let parser = SparkplugParser;
-        let bytes = make_valid_frame_bytes();
-        let frame = parser.parse(&bytes).unwrap();
-        assert_eq!(frame.version, 1);
-        assert_eq!(frame.message_type, SparkplugMessageType::NBIRTH);
-        assert_eq!(frame.seq, 0);
-        assert_eq!(frame.timestamp, 1000000);
-        assert_eq!(frame.metrics.len(), 1);
-        assert_eq!(frame.metrics[0].name, "temp");
+    fn varint_decodes_multi_byte_values() {
+        let mut pos = 0;
+        assert_eq!(read_varint(&[0xAC, 0x02], &mut pos).unwrap(), 300);
+        assert_eq!(pos, 2);
     }
 
     #[test]
-    fn invalid_frame_too_short() {
-        let parser = SparkplugParser;
-        let result = parser.parse(&[1, 0]);
-        assert!(result.is_err());
+    fn truncated_varint_is_rejected() {
+        assert!(read_varint(&[0x80], &mut 0).is_err());
     }
 
     #[test]
-    fn truncation() {
-        let mut bytes = make_valid_frame_bytes();
-        bytes.truncate(15);
-        let parser = SparkplugParser;
-        let result = parser.parse(&bytes);
-        assert!(result.is_err());
+    fn topic_parses_node_and_device_forms() {
+        let node = SparkplugTopic::parse("spBv1.0/Plant1/NDATA/Edge7").unwrap();
+        assert_eq!(node.group_id, "Plant1");
+        assert_eq!(node.message_type, SparkplugMessageType::NData);
+        assert_eq!(node.edge_node_id, "Edge7");
+        assert_eq!(node.device_id, None);
+
+        let device = SparkplugTopic::parse("spBv1.0/Plant1/DDATA/Edge7/Pump3").unwrap();
+        assert_eq!(device.device_id.as_deref(), Some("Pump3"));
     }
 
     #[test]
-    fn garbage_data() {
-        let parser = SparkplugParser;
-        let result = parser.parse(&[0xff; 32]);
-        assert!(result.is_err());
+    fn topic_rules_are_enforced() {
+        assert!(SparkplugTopic::parse("mqtt/Plant1/NDATA/Edge7").is_err());
+        assert!(SparkplugTopic::parse("spBv1.0/Plant1/NDATA/+").is_err());
+        assert!(SparkplugTopic::parse("spBv1.0/Plant1/NDATA/Edge7/Pump3").is_err());
+        assert!(SparkplugTopic::parse("spBv1.0/Plant1/DDATA/Edge7").is_err());
+        assert!(SparkplugTopic::parse("spBv1.0/Plant1/STATE/Edge7").is_err());
     }
 
     #[test]
-    fn invalid_seq() {
-        let mut bytes = make_valid_frame_bytes();
-        bytes[2] = 0x01;
-        bytes[3] = 0x00;
-        let parser = SparkplugParser;
-        let result = parser.parse(&bytes);
-        assert!(result.is_err());
+    fn birth_payload_decodes_metrics_by_datatype() {
+        let bytes = payload(
+            &[
+                double_metric("Temp", 21.5),
+                metric("Count", 6, |m| put_varint_field(m, 10, 500)),
+                metric("Flag", 11, |m| put_varint_field(m, 14, 1)),
+                metric("Label", 12, |m| put_bytes_field(m, 15, b"ok")),
+            ],
+            7,
+        );
+        let frame = decode("spBv1.0/Plant1/NBIRTH/Edge7", &bytes).unwrap();
+        assert_eq!(frame.seq, Some(7));
+        assert_eq!(frame.timestamp, Some(1_700_000_000_000));
+        assert_eq!(frame.metrics[0].value, Some(TupValue::Float(21.5)));
+        assert_eq!(frame.metrics[1].value, Some(TupValue::Int(500)));
+        assert_eq!(frame.metrics[2].value, Some(TupValue::Bool(true)));
+        assert_eq!(frame.metrics[3].value, Some(TupValue::Text("ok".into())));
     }
 
     #[test]
-    fn normalize_roundtrip() {
-        let parser = SparkplugParser;
-        let normalizer = SparkplugNormalizer;
-        let bytes = make_valid_frame_bytes();
-        let frame = parser.parse(&bytes).unwrap();
-        let dp = normalizer.normalize(&frame).unwrap();
-        assert_eq!(dp.source_protocol, SourceProtocol::Sparkplugb);
-        assert_eq!(dp.point_id, "temp");
+    fn signed_integer_datatypes_are_sign_extended() {
+        // Int8 -1 is carried as the uint32 0xFFFFFFFF.
+        let bytes = payload(
+            &[metric("I8", 1, |m| put_varint_field(m, 10, 0xFFFF_FFFF))],
+            0,
+        );
+        let frame = SparkplugParser.parse(&bytes).unwrap();
+        assert_eq!(frame.metrics[0].value, Some(TupValue::Int(-1)));
     }
 
     #[test]
-    fn validator_connected() {
-        let validator = SparkplugValidator;
-        let state = SparkplugConnectionState {
+    fn uint64_above_i64_max_is_rejected() {
+        let bytes = payload(&[metric("U", 8, |m| put_varint_field(m, 11, u64::MAX))], 0);
+        assert!(SparkplugParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn null_metric_has_no_value() {
+        let bytes = payload(
+            &[metric("Gone", 3, |m| {
+                put_varint_field(m, 7, 1); // is_null
+            })],
+            0,
+        );
+        let frame = SparkplugParser.parse(&bytes).unwrap();
+        assert_eq!(frame.metrics[0].value, None);
+        assert_eq!(frame.metrics[0].name, "Gone");
+    }
+
+    #[test]
+    fn unknown_fields_are_skipped() {
+        let mut bytes = payload(&[double_metric("T", 1.0)], 0);
+        put_varint_field(&mut bytes, 99, 12345); // not a Sparkplug field
+        assert!(SparkplugParser.parse(&bytes).is_ok());
+    }
+
+    #[test]
+    fn wrong_wire_type_for_a_known_field_is_rejected() {
+        let mut bytes = Vec::new();
+        put_bytes_field(&mut bytes, 1, b"not a timestamp");
+        assert!(SparkplugParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn length_past_the_end_is_rejected() {
+        let mut bytes = Vec::new();
+        put_key(&mut bytes, 4, 2);
+        put_varint(&mut bytes, 50);
+        bytes.extend_from_slice(b"short");
+        assert!(SparkplugParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn seq_above_255_is_rejected() {
+        assert!(SparkplugParser.parse(&payload(&[], 256)).is_err());
+    }
+
+    #[test]
+    fn datatype_mismatch_is_rejected() {
+        // Double datatype carrying an integer value.
+        let bytes = payload(&[metric("X", 10, |m| put_varint_field(m, 10, 1))], 0);
+        assert!(SparkplugParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn normalizer_emits_one_point_per_metric_with_device_from_topic() {
+        let bytes = payload(
+            &[
+                double_metric("Temp", 21.5),
+                double_metric("Pressure", 101.3),
+            ],
+            3,
+        );
+        let frame = decode("spBv1.0/Plant1/DDATA/Edge7/Pump3", &bytes).unwrap();
+        let points = SparkplugNormalizer.points(&frame);
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].device_id, "sparkplug:Plant1/Edge7/Pump3");
+        assert_eq!(points[0].point_id, "Temp");
+        assert_eq!(points[0].timestamp, 1_700_000_000_000);
+        assert_eq!(points[1].point_id, "Pressure");
+    }
+
+    #[test]
+    fn normalize_without_metrics_reports_the_sequence() {
+        let frame = decode("spBv1.0/Plant1/NDEATH/Edge7", &payload(&[], 9)).unwrap();
+        let dp = SparkplugNormalizer.normalize(&frame).unwrap();
+        assert_eq!(dp.point_id, "seq:9");
+        assert_eq!(dp.value, TupValue::Int(9));
+    }
+
+    #[test]
+    fn validator_connected_and_seq_range() {
+        let ok = SparkplugConnectionState {
             connected: true,
-            last_seq: 0,
+            last_seq: 255,
             birth_received: true,
         };
-        assert!(validator.validate(&state).is_ok());
-    }
-
-    #[test]
-    fn validator_disconnected() {
-        let validator = SparkplugValidator;
-        let state = SparkplugConnectionState {
+        assert!(SparkplugValidator.validate(&ok).is_ok());
+        let down = SparkplugConnectionState {
             connected: false,
-            last_seq: 0,
-            birth_received: false,
+            ..ok.clone()
         };
-        assert!(validator.validate(&state).is_err());
+        assert!(SparkplugValidator.validate(&down).is_err());
+        let bad = SparkplugConnectionState {
+            last_seq: 256,
+            ..ok
+        };
+        assert!(SparkplugValidator.validate(&bad).is_err());
     }
 
     #[test]
-    fn huge_metric_count_no_unbounded_alloc() {
-        // 14-byte header with a 0xFFFF metric count; must Err without allocating
-        // 65k Metric structs.
-        let parser = SparkplugParser;
-        let mut bytes = vec![1u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF];
-        let result = parser.parse(&bytes);
-        assert!(result.is_err());
-        // Also when the count is non-zero but data is missing.
-        bytes[12] = 0x00;
-        let result = parser.parse(&bytes);
-        assert!(result.is_err());
+    fn garbage_is_rejected_without_panic() {
+        assert!(SparkplugParser.parse(&[0xFF; 32]).is_err());
+        assert!(SparkplugParser.parse(&[0x0B, 0x80]).is_err());
     }
 }
 
@@ -395,10 +740,9 @@ mod fuzz {
     proptest! {
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
-            let parser = SparkplugParser;
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
-            let _ = parser.parse(&bytes);
+            let _ = SparkplugParser.parse(&bytes);
         }
     }
 }
