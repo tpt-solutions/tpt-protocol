@@ -34,7 +34,7 @@ cargo run --bin tpt-protocol-daemon -- --simulate modbus
 cargo run --bin tpt-protocol-cli
 ```
 
-CI (`.github/workflows/ci.yml`) runs four independent jobs: `fmt`, `clippy`, `test`, and `no_std` (build for `thumbv6m-none-eabi`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
+CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, `no_std` (build for `thumbv6m-none-eabi`), `msrv` (check on Rust 1.81), and `cargo-deny`. Nightly fuzzing of every parser runs from `.github/workflows/fuzz.yml`; cargo-fuzz does not link on Windows, so run fuzz targets on Linux (`cargo +nightly fuzz run <target> --fuzz-dir fuzz`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
 
 ## Architecture
 
@@ -48,17 +48,13 @@ CI (`.github/workflows/ci.yml`) runs four independent jobs: `fmt`, `clippy`, `te
    - `DataNormalizer` — `Frame` → `tup::DataPoint` (has a default `normalize_batch`)
    - `ProtocolPlugin` (behind the `std` feature, needs `futures-util`) — daemon-facing: yields a `Stream<Item = DataPoint>` from simulated or real hardware.
 
-3. **Protocol crates** (`crates/tpt-protocol-<name>` and `crates/out-protocol-<name>`) — one per protocol. Each is `#![no_std]` + `alloc`, depends only on `tpt-protocol-core` + `tpt-protocol-tup`, and implements `FrameParser` + `StateValidator` + `DataNormalizer` for that protocol's frame format (checksums/CRC/framing handled per-protocol). No protocol crate depends on another protocol crate.
+3. **Protocol crates** (`crates/tpt-protocol-<name>`) — one per protocol. Each is `#![no_std]` + `alloc`, depends only on `tpt-protocol-core` + `tpt-protocol-tup`, and implements `FrameParser` + `StateValidator` + `DataNormalizer` for that protocol's frame format (checksums/CRC/framing handled per-protocol). No protocol crate depends on another protocol crate.
 
 4. **`tpt-protocol-daemon`** — std binary. Implements `ProtocolPlugin` per protocol (see `ModbusPlugin` in `main.rs` for the pattern — simulated streams today, real transports added incrementally), serves a local-only WebSocket API (binds `127.0.0.1`, via `tokio-tungstenite`) streaming TUP as JSON.
 
 5. **`tpt-protocol-cli`** — std binary, `ratatui` TUI, connects to the daemon's WebSocket for a live data dashboard.
 
-**`tpt-protocol-*` vs `out-protocol-*` naming**: both are from-scratch reimplementations (never wrappers around the crates.io crate they're compared to) with identical dependency shape (`tpt-protocol-core` + `tpt-protocol-tup` only). The difference is just the `publish` flag in `Cargo.toml` / whether the crate is in the "published" set:
-- `tpt-protocol-<name>` → `publish` unset (published) — used when there's a concrete reason ours is better: a no_std gap in the existing crates.io crate (e.g. `tokio-modbus`, `coap-rs`, and `canopen` are std/tokio- or Linux-socketcan-only), a license gap (e.g. `nmea` and `rs-matter` are Apache-2.0-only, ours is dual `MIT OR Apache-2.0`), the existing crate is unmaintained (`ocpp`, abandoned since 2019), or no crate exists at all (`uds`/ISO 14229).
-- `out-protocol-<name>` → `publish = false` — used when the existing crates.io crate already covers both no_std and dual licensing (currently none).
-- Exception: `tpt-protocol-ethercat` (`ethercat`→`ethercrab`) and `tpt-protocol-mavlink` (`mavlink`→`mavlink`) use the `tpt-` name and are published (publish unset). `tpt-protocol-mavlink` wraps the `mavlink` crate for decoding; `tpt-protocol-ethercat` is still a from-scratch parser.
-`publish = false` only affects crates.io distribution — private crates are full workspace members, implement the same traits, and are wired into the daemon identically to published ones. See the reasoning table in `TODO.md` (Phase 3/4) before changing publish status on any crate.
+**Naming**: every protocol crate is `tpt-protocol-<name>` and is published to crates.io (`publish` unset). Each is a from-scratch reimplementation (never a wrapper around the crates.io crate it's compared to), with the same dependency shape (`tpt-protocol-core` + `tpt-protocol-tup` only). A crate is published because there is a concrete reason its alternative falls short: a no_std gap (e.g. `tokio-modbus`, `coap-rs`, `canopen`), a license gap (e.g. `nmea`, `rs-matter`), an unmaintained crate (`ocpp`), or no crate at all (`uds`). The exception is `tpt-protocol-ethercat` and `tpt-protocol-mavlink`, which are also published. See the reasoning table in `TODO.md` (Phase 3/4) before changing publish status on any crate.
 
 **Design invariants** (from `spec.txt` / root `README.md`):
 - **no_std by default** — core parsing/encoding logic must run on bare-metal (`thumbv6m-none-eabi` is the CI target). `std` is opt-in via feature flags (`tpt-protocol-tup/std`, `tpt-protocol-core/std`) and only needed by the daemon/CLI layer.

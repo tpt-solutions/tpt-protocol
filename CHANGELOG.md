@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `cddl_conformance` tests check encoder output against the CDDL rules, and check that the
+  protocol and quality lists match the Rust enums.
+- Structured Modbus MBAP property test (valid header, skewed length, mutation).
+- `fuzz/` cargo-fuzz crate with one target per protocol parser (`parse` and `try_parse`) and
+  for the TUP CBOR and JSON decoders. Nightly job in `.github/workflows/fuzz.yml`.
+- `msrv` CI job (Rust 1.81). Dependabot, SECURITY.md, and issue/PR templates.
+- Daemon `--replay-format hex|raw` (default `hex`); `--replay` now requires `--simulate`.
+- Daemon `--token` and `--allow-origin` flags.
+- Daemon answers WebSocket `Ping` frames and stops on `Close`. Clients that fall
+  behind receive `{"type":"lagged","dropped":n}`.
 - Daemon now simulates **all 19** protocol crates via dedicated `ProtocolPlugin`
   implementations (`tpt-protocol-daemon/src/plugins/mod.rs`).
 - `--list-protocols` flag lists every supported protocol.
@@ -27,6 +37,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `deny.toml` and a `cargo-deny` CI job (license/advisory/duplicate-version bans).
 
 ### Security
+- Daemon WebSocket API: handshakes are checked for a loopback `Host` header
+  (DNS-rebinding defence) and an allowed browser `Origin` (Tauri webview origins
+  by default, plus `--allow-origin`). An optional `--token` requires a token,
+  compared in constant time.
+- Daemon: handshakes time out after 5 s, at most 64 clients are served, and
+  incoming messages are capped at 64 KiB.
+- Modbus: an MBAP length below 2 no longer panics (`bytes[8..6]` slicing).
+- HL7 v2: non-char-boundary slicing of multi-byte input no longer panics.
+
 - Fixed DNP3 out-of-bounds panic on a truncated frame (trailing CRC guard).
 - Fixed Matter-Thread off-by-one OOB panic on Float TLV (`< 21` vs `< 20`).
 - Fixed DoIP/SOME-IP and OCPP `u32` length-integer overflow into an invalid
@@ -41,6 +60,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **Modbus:** `ModbusParser::response()` parses response frames. Read responses, write echoes and exception
+  responses (`fc | 0x80`) are distinct variants. Requests are range-checked, FC 0x05 accepts only 0xFF00/0x0000,
+  and FC 0x10 checks its byte count. Read requests no longer normalize to their quantity; they return an error.
+  `ModbusRtuFrame` has a `transaction_id` field.
+- **DNP3:** the header CRC covers the start bytes, user data is parsed in 16-byte blocks with per-block CRCs,
+  and transport and application headers are parsed. Frames built with the old layout are rejected.
+- **DoIP/SOME-IP:** payload types follow ISO 13400-2 (0x0004-0x0008 and 0x8001-0x8003 were wrong). Truncated
+  or trailing DoIP payloads and wrong SOME/IP lengths are errors.
+- **BACnet:** BVLC function codes follow Annex J, the NPDU is parsed, and the object identifier is decoded
+  from the packed form. The BVLC length must match the frame.
+- **UDS:** negative responses (0x7F) parse. 0x14 has no sub-function. `suppressPosRsp` is exposed. Services
+  0x19, 0x31, 0x34-0x37 and 0x85 are added.
+- **TUP JSON mirror:** `Bytes` values are `{"bytes": "0x…"}` and non-finite floats are
+  `{"float": "NaN" | "Infinity" | "-Infinity"}`. Before, bytes came back as text and
+  NaN/Infinity became `null` and failed to parse. `schema/tup-v1.schema.json` is updated to match.
+- **TUP CBOR decoder** rejects indefinite-length maps and value arrays, extra value array
+  elements, duplicate keys, and `schema_version` 0. `encode_to_vec` returns the encoder's error.
+- **TUP JSON decoder** rejects `schema_version` 0 or above the supported maximum, invalid
+  `raw` hex, and integers above the u64 range. It no longer re-types them as floats.
+- `schema/tup-v1.cddl` and `SPEC-TUP.md` §3 describe the CBOR encoding the code produces: integer
+  map keys and `[tag, value]` values. Previously they described text keys.
+- `Quality` and `SourceProtocol` are `#[non_exhaustive]`.
+- Workspace MSRV raised from 1.75 to 1.81. `core::error::Error` needs 1.81.
+- CANopen, J1939 and ISOBUS normalizers read the 4-byte payload value as little-endian,
+  as CAN and SAE J1939 specify. The previous big-endian read gave wrong values.
+
 - Reconciled `dead_code` suppressions in `tpt-protocol-knx` and
   `tpt-protocol-coap`: dead helpers (`KnxServiceType::as_str`,
   `GroupAddress::to_u16`, `CoapCode` classification methods) are now part of the
@@ -49,6 +94,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simulation-only; real Serial/CAN/TCP/UDP transport is future work.
 
 ### Known gaps (documented, not fixed this pass)
-- MAVLink CRC validation omits the real per-message `CRC_EXTRA` seed byte. This
-  is a correctness gap (not memory-safety) requiring the full message-ID→seed
-  table; deferred to a follow-up.

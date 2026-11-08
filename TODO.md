@@ -11,12 +11,10 @@ core traits work end-to-end through the daemon and TUI before the rest are
 built out.
 
 **NOTE:** 9 crates that have existing well-known Rust alternatives on crates.io
-were initially renamed to `out-protocol-*` and set `publish = false`, on the
-assumption that publishing a redundant reimplementation next to an
-already-good crates.io crate adds nothing. Auditing each alternative's
-no_std support and license turned up concrete gaps for 7 of the 9, so those
-7 were promoted back to published `tpt-protocol-*` crates. Only 2 remain
-private, where the existing crate genuinely has no gap:
+were first set up as `out-protocol-*` with `publish = false`. Auditing each
+alternative's no_std support and license found a concrete gap for every one of
+them, so all 9 are published `tpt-protocol-*` crates. No `out-protocol-*` crate
+remains in the workspace. The verdict for each:
 
 | Crate | crates.io original | Original's issue | Verdict |
 |---|---|---|---|
@@ -30,13 +28,10 @@ private, where the existing crate genuinely has no gap:
 | `ethercat` | `ethercrab` | std **and** no_std, `MIT OR Apache-2.0` | published as `tpt-protocol-ethercat` (no gap; from-scratch) |
 | `mavlink` | `mavlink` | std + embedded feature, `MIT/Apache-2.0` | published as `tpt-protocol-mavlink` (wraps `mavlink` for decoding) |
 
-`out-protocol-*` crates are all `#![no_std]` (using `alloc` for heap
-collections, not full std) and depend only on in-workspace `tpt-protocol-core`
-/ `tpt-protocol-tup` (both `MIT OR Apache-2.0`) — they're from-scratch
-reimplementations, not wrappers, so there's never a dependency-license
-concern regardless of publish status. "Private" (`publish = false`) only
-affects crates.io distribution; private crates are still full workspace
-members with complete TUP normalization, used identically by the daemon.
+Every protocol crate is `#![no_std]` (using `alloc` for heap collections, not
+full std) and depends only on in-workspace `tpt-protocol-core` /
+`tpt-protocol-tup` (both `MIT OR Apache-2.0`). They are from-scratch
+reimplementations, not wrappers, so there is no dependency-license concern.
 
 17 protocol crates + `tup` + `core` + `ethercat` + `mavlink` = **21 published crates**. (`ethercat` and `mavlink`
 were `out-protocol-*` and are now `tpt-protocol-*` with publish unset.)
@@ -78,9 +73,8 @@ All three are now COMPLETE — see the **Later / Deferred** section.
 - [x] Malformed/truncated-frame tests (no panics/overflows on garbage input)
 - [x] Crate README + full `Cargo.toml` metadata
 
-**Pattern B — scratch impl originally kept private; 7 of 9 promoted to
-published `tpt-protocol-*` after the no_std/license audit (see NOTE above),
-2 remain private (`out-protocol-*`, no gap vs. the existing crate):**
+**Pattern B — scratch impl originally kept private; all 9 promoted to
+published `tpt-protocol-*` after the no_std/license audit (see NOTE above):**
 - [x] `tpt-protocol-uds` (ISO 14229) — 9 tests — published (no existing crate)
 - [x] `tpt-protocol-canopen` — 9 tests — published (no_std gap)
 - [x] `tpt-protocol-nmea` (NMEA 2000/0183) — 11 tests — published (license gap)
@@ -196,9 +190,10 @@ them). This phase closes both gaps and adds core adoption tooling.
 - [x] Add `proptest` dev-dependency + a per-protocol-crate property test
       feeding random bytes into `FrameParser::parse`, asserting no panic
       (all 19 protocol crates + 2 private crates have `mod fuzz`)
-- [ ] Documented follow-up (not fixed this pass): MAVLink CRC validation
-      omits the real per-message `CRC_EXTRA` seed byte — correctness gap,
-      not memory-safety; needs the full message-ID→seed table
+- [x] Documented follow-up: MAVLink CRC validation omits the real per-message
+      `CRC_EXTRA` seed byte — **resolved 2026-11-08: the `mavlink` crate
+      validates CRC_EXTRA via its generated `Message::extra_crc` table, so
+      no seed table is needed here. Regression: `crc_extra_seed_is_enforced`.**
 
 ### 9.3 — Daemon: wire all 19 protocols as simulated plugins
 - [x] Split `daemon/src/main.rs`'s inline `ModbusPlugin` into a
@@ -234,6 +229,100 @@ them). This phase closes both gaps and adds core adoption tooling.
 - [x] `deny.toml` + `cargo-deny` CI job (license allow-list, advisories,
       duplicate-version bans)
 
+## Phase 10 — Safety & Trust Fixes (review 2026-11-08, from reading the code only; reproduce each with a failing test first)
+
+### 10.1 — Parser panics on untrusted input
+- [x] Modbus: 8 zero bytes passes `looks_like_tcp` then slices `bytes[8..6+length]` with start > end
+      (`modbus/src/lib.rs:190-193,344-346`) — require MBAP `length >= 2`
+- [x] HL7v2: byte-slicing a `&str` panics on multi-byte chars (`hl7v2/src/lib.rs:95,100,142,146`);
+      the Phase 9.2 "fixed" entry above is only half true
+- [ ] Replace uniform-random proptests with structured generators (valid prefix + mutation) per crate — **partial: Modbus done (MBAP header, skewed length, mutation); DNP3, MAVLink and the rest still uniform-random**
+      (e.g. Modbus `00 00` prefix, DNP3 `0x0564`, MAVLink magic)
+- [x] Add `fuzz/` (cargo-fuzz) targets for all parsers and tup CBOR/JSON decode — **done: 21 targets (`parse` + `try_parse`, and CBOR round-trip). Run on WSL Ubuntu, 60 s each, ~0.4–22 M inputs per target, no crashes. Nightly job: `.github/workflows/fuzz.yml`. Windows MSVC cannot link libFuzzer. Longer runs are still needed.**
+
+### 10.2 — Daemon security & correctness (`daemon/src/main.rs`)
+- [x] WebSocket: check `Origin` and `Host` via `accept_hdr_async` (blocks web pages and DNS rebinding
+      on 127.0.0.1); optional `--token`; handshake timeout, connection cap, max message size
+- [x] Accept loop exits silently on any accept error (`:122`) — log and continue
+- [x] `--replay` uses `read_to_string` before the raw-bytes fallback (`:170-183`); add `--replay-format hex|raw`;
+      stop defaulting silently to `modbus`
+- [x] CLI flags must override config file (`:159-165`); `deny_unknown_fields` on config
+- [x] Remove duplicate `datapoint_to_json` (`:56-80`), use `tup::json::to_json_string` (it currently drops `raw`
+      and turns bytes into `"<n bytes>"`)
+- [x] Process client Close/Ping frames (read half is dropped); tell clients when messages were lagged/dropped
+- [x] Log when the simulation stream ends; fix `localhost`/hostname handling in `is_loopback_bind`
+
+### 10.3 — TUP spec vs code mismatch (the "open spec" risk)
+- [x] `tup/src/cbor.rs` uses integer keys 0..8 and `TupValue` as `[tag, v]`; `schema/tup-v1.cddl` and
+      `SPEC-TUP.md` §3 use text keys and native values. Make them agree (recommended: integer keys normative
+      for CBOR, text keys for JSON) and add a test validating encoded CBOR against the CDDL
+      — **done 2026-11-08: CDDL and §3 rewritten to integer keys; `cddl_conformance` tests check encoder output
+      and the protocol/quality lists. The checker is hand-written, not a general CDDL validator.**
+- [x] CBOR decoder: indefinite-length maps (`:171`), extra array elements (`:96`), duplicate keys,
+      `schema_version` 0, unknown protocol/quality strings should not hard-fail (`:38,56`)
+- [x] JSON round-trip: Bytes vs Text ambiguity, NaN/Inf, invalid hex `raw`, u64 > i64::MAX, check
+      `schema_version` (`json.rs:27-42,76,85-87`)
+- [x] `#[non_exhaustive]` on `Quality` and `SourceProtocol` before first publish
+- [x] `encode_to_vec` discards the real encode error (`cbor.rs:230`); add `From<minicbor::…>` for core `Error` — **done for encode_to_vec (returns minicbor's error). The core `From` impl is not needed: core does not call minicbor.**
+- [x] `tup`: README says `std` default and "no alloc" but `default = []` and `extern crate alloc` is unconditional; `hex` should be optional — **done: README corrected (`std` is not a default; alloc is always required); `hex` is optional behind `std`.**
+
+### 10.4 — Build hygiene & docs drift
+- [x] `core/src/error.rs:118` uses `core::error::Error` (Rust 1.81) but `rust-version = "1.75"`; fix or raise MSRV and add an MSRV CI job — **done: workspace MSRV raised to 1.81, `msrv` CI job added; 1.81 verified locally, 1.75 fails on the minicbor build script**
+- [x] Decide on untracked `.cargo/config.toml` (`incompatible-rust-versions = "fallback"`; it re-resolved Cargo.lock) and the
+      `ui-*` crates' hard-coded `rust-version = "1.90"` — **decided: keep the config (documented; needs Cargo 1.84+, ignored with a warning on 1.81; not yet committed); keep 1.90 for the `ui-*` apps and document it in their READMEs.**
+- [x] Remove stale `out-protocol-*` text (README, CLAUDE.md, TODO header/Pattern B, "2 remain private"); no such crate exists
+- [ ] Fix counts: "21 published crates", README "16 more", TODO "206 tests", CI "four jobs" (five with cargo-deny)
+- [ ] Fix README `tpt-telos` crates.io link name; `main` vs `master` in CONTRIBUTING.md; CONTRIBUTING no_std command fails on std crates
+- [ ] CHANGELOG "Known gaps" MAVLink CRC_EXTRA entry removed (done); still open: `spec.txt` §5 layout and NMEA 2000/DoIP numbering are out of date
+- [ ] Correct overstated claims: "all 19 wired" is simulation only (sine wave, parser never used), "no alloc" for tup/core
+- [ ] `CODE_OF_CONDUCT.md` (done: `SECURITY.md`, issue/PR templates, `dependabot.yml`)
+- [x] `daemon` is unpublishable (path-only deps); set `publish = false` on daemon/cli/ui/telos (done; hoisting `proptest`, tokio, clap, etc. to `[workspace.dependencies]` is still open)
+
+## Phase 11 — Parsers Must Match the Real Protocols
+Add `tests/vectors/` per crate from real captures/vendor vectors so tests stop being circular (they currently pass against each crate's own builder).
+- [ ] EtherCAT: command table (APWR=2, FPWR=5, BWR=8, LRD=10, LWR=11), LE 11-bit length header, multiple datagrams
+- [x] DNP3: frame size (`length+2` wrong), per-16-byte-block data CRCs, Application Control byte, responses (0x81) — **done: header CRC now covers the start bytes (checked against the published CRC-16/DNP vector), user data is split into 16-byte blocks with per-block CRCs, transport and application headers are parsed, first-fragment-only app header, 0x00/0x81/0x82 function codes, `try_parse` reports exact consumed length and `Ok(None)` for incomplete frames.**
+- [ ] OPC UA: little-endian fields, validate `message_size`, don't leak bytes beyond it, fix nodeid packing
+- [x] DoIP/SOME-IP: payload-type table (0x0004–0x0008, 0x8001–0x8003), better discriminator than `bytes[0]==0x02`, check SOME/IP length, truncated payload — **done: ISO 13400-2 payload-type table, discriminator is version (0x01/0x02/0x03/0xFF) plus its inverse, with SOME/IP fallback; truncated and trailing DoIP payloads are errors; SOME/IP length must equal the frame length. Two existing tests encoded the wrong table and length and were corrected.**
+- [x] BACnet: BVLC codes (0x0A/0x0B/0x04), NPDU layer, packed object ID, validate `bvlc_length` — **done: Annex J function codes, NPDU with DNET/SNET/hop count and network-layer messages, Forwarded-NPDU address, packed 10-bit type / 22-bit instance, invoke ID and service choice, ReadProperty object and property decode, exact BVLC length. The old tests used a layout that is not BACnet and were rewritten.**
+- [x] Modbus: read responses, exception responses (fc|0x80), TCP transaction ID, `byte_count`, FC 0x05 values, normalizer emits `quantity` as value — **done: `ModbusParser::response()` parses responses, read data and write echoes are distinct variants, exceptions parse in both directions, byte counts and quantities are checked, FC 0x05 accepts only 0xFF00/0x0000, the TCP transaction ID is exposed, read requests no longer normalize to their quantity (they error), and RTU frames with a valid CRC are never mistaken for TCP.**
+- [ ] CANopen/J1939/ISOBUS `normalize` read big-endian but data is little-endian; CANopen Emergency and PDO3/4; J1939 EDP bit and PGN names; ISOBUS 0xEC00 = TP.CM; dedupe isobus/j1939 copy-paste — **partial: value decode is little-endian in all three, with regression tests (CANopen's existing roundtrip test was circular and is corrected). Still open: ISOBUS `implement_id` is still read big-endian; Emergency/PDO3-4; J1939 EDP/PGN names; ISOBUS TP.CM; dedupe.**
+- [x] UDS: negative response 0x7F, 0x14 has no sub-function, suppressPosRsp bit, missing services (0x19, 0x31, 0x34-0x37, 0x85) — **done: 0x7F parsed with requested SID and NRC (normalized as a Bad-quality point), 0x14 has no sub-function, bit 7 of a request's sub-function is `suppress_positive_response` and is no longer masked away in responses, all listed services added with their responses.**
+- [ ] NMEA: checksum slicing with leading whitespace, bad checksum should be `Err` (like Modbus/DNP3), talkers GN/GL/GA, first-field-only normalizer, NMEA 2000 not implemented
+- [ ] Sparkplug B (real: Protobuf over MQTT), OCPP-J (real: JSON, 1.6 vs 2.0.1 actions, `as u16` truncation), IEEE 11073 SDC (real: SOAP/XML), Matter TLV, KNX cEMI — implement properly; until then label "experimental simplified framing" in README and `--list-protocols`
+- [ ] KNX: service_type ignored in normalizer, priority bit comment vs code mismatch, redundant validator; Matter: dead duplicate length check, "Other" cluster
+- [ ] CoAP: option-number wrap, empty payload after 0xFF marker, Uri-Path invalid UTF-8, device_id/point_id choice
+- [ ] MAVLink: only 4 message IDs named, signature lost on re-serialize, normalizer reads first 4 bytes not decoded fields; CRC_EXTRA test only covers HEARTBEAT v1 — add v2 and other IDs
+- [ ] Core: use the unused `Error` variants (`Checksum` should carry a u16/u32), `try_parse` must report real consumed/need-more-data (Modbus and J1939 still return `bytes.len()`), add `FrameEncoder` trait with round-trip tests, give `ProtocolPlugin` a real I/O path
+- [ ] Normalizers: real timestamps (15 hard-code 0), fan out via `normalize_batch`, stop emitting meaningless values; uniform constructors/derives/state structs across older vs newer crates; consistent `Error::parse` use
+
+## Phase 12 — Real Data Path & Daemon/UI Polish
+- [ ] `Transport` trait + Serial/TCP/UDP/SocketCAN backends, streaming framer using `try_parse`; plugins run real bytes through the protocol crate instead of a sine wave (supersedes the two Deferred items below)
+- [ ] `tracing` + `RUST_LOG`, metrics (clients, lagged/dropped), `/healthz`, `--interval`; feature-gate protocols in the daemon
+- [ ] CLI: restore terminal on every exit path, filter `key.kind == Press` (double scroll on Windows), `VecDeque` + bounded channel, date/timezone in timestamps, auto-follow, pong handling
+- [ ] ui-web: CSP hard-codes `ws://127.0.0.1:9080` vs `TPT_DAEMON_URL`, remove production devtools permission, reconnect timers stack, O(n²) slice, no teardown; ui-embedded: `unwrap()` on `spawn_local`, show connection status
+- [ ] Drop unused `native-tls` from cli/ui crates; build and lint ui-web/ui-embedded in CI
+- [ ] Daemon tests: `datapoint_to_json`, `is_loopback_bind`, config precedence, replay hex/binary, end-to-end WS with good/bad Origin; CLI tests for `parse_data_points`, `format_timestamp`, scrolling
+
+## Phase 13 — Adoption Kit
+- [ ] Dockerfile + `docker run` quickstart for the daemon
+- [ ] Release workflow (cargo-dist or release-plz) with prebuilt Windows/Linux/macOS binaries; `cargo package` dry-run CI job; README badges
+- [ ] Runnable `examples/parse_frame` for every protocol (only tup, core, modbus have one) plus sample frame files usable with `--replay`
+- [ ] Windows-friendly scaffolder (`cargo xtask new-protocol` or cargo-generate template) that also wires the daemon plugin and adds proptest + fuzz target (current script is bash-only and does neither)
+- [ ] "Bring your own protocol in 30 lines" tutorial based on `core/examples/custom_protocol.rs`
+- [ ] WASM build (`wasm-bindgen`) + browser "paste hex, see TUP" playground
+- [ ] `pyo3` wheel exposing `decode(protocol, bytes) -> dict`; `cbindgen` C header for embedded/PLC vendors
+- [ ] CI: MSRV job, Windows/macOS matrix, coverage, criterion benchmarks, cargo-semver-checks, cargo-audit, `--no-default-features`/`--all-features` no_std matrix, `cargo doc -D warnings`, telos `--features verify`, pin `cargo-deny-action`, `rust-cache`, scheduled advisory run, `rust-toolchain.toml`
+
+## Phase 14 — Innovative Additions (pick later)
+- [ ] Protocol auto-detect: try all parsers on raw bytes and rank by confidence
+- [ ] Capture import/export: pcap/pcapng and candump replay; TUP out to MCAP/Parquet/NDJSON
+- [ ] Sinks/bridges: MQTT, OPC UA server, InfluxDB/Prometheus remote-write, OpenTelemetry
+- [ ] Declarative mapping config (TOML/YAML) from (protocol, device, point) to names, units, scaling
+- [ ] Differential testing against reference implementations (tshark dissectors, pymodbus, …) in CI
+- [ ] Anomaly/security rules on TUP streams (unexpected function codes, replay, rate spikes)
+- [ ] Link telos specs to real code (extend beyond Modbus; consider Kani/Creusot); telos `verify_dir` is cwd-relative; only 3 Modbus specs exist today
+
 ## Later / Deferred
 - [x] `ui-embedded` (Slint native dashboard) — `tpt-protocol-ui-embedded`, connects to daemon WS
 - [x] `ui-web` (Tauri v2 + SvelteKit fleet dashboard) — `tpt-protocol-ui-web`, connects to daemon WS
@@ -241,4 +330,4 @@ them). This phase closes both gaps and adds core adoption tooling.
 - [ ] Dedicated low-latency IPC channel (Unix socket/named pipe) if WebSocket proves insufficient for the TUI
 - [ ] Real transport clients (Serial/CAN/TCP/UDP) for the daemon — genuine
       hardware I/O, beyond Phase 9.3's simulation-only wiring
-- [ ] MAVLink `CRC_EXTRA` per-message seed table for full spec compliance
+- [x] MAVLink `CRC_EXTRA` per-message seed table for full spec compliance — **resolved 2026-11-08: provided by the `mavlink` crate's generated `extra_crc` table (see Phase 9.2).**

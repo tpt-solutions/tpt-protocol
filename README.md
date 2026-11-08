@@ -61,7 +61,6 @@ tpt-protocol/
 ├── crates/tpt-protocol-tup/       # TUP schema (CBOR + JSON), no_std
 ├── crates/tpt-protocol-core/      # Core traits (FrameParser, StateValidator, DataNormalizer)
 ├── crates/tpt-protocol-<name>/    # 17 published protocol crates (Pattern A — scratch)
-├── crates/out-protocol-<name>/    # 2 private from-scratch implementations (not published)
 ├── crates/tpt-protocol-daemon/    # Background service
 ├── crates/tpt-protocol-cli/       # TUI (ratatui dashboard)
 ├── crates/tpt-protocol-ui-embedded/ # Native embedded UI (Slint)
@@ -102,7 +101,7 @@ hardware. Real transport (Serial/CAN/TCP/UDP) is future work.
 - **no_std by default**: All protocol crates compile to bare-metal targets (`thumbv6m-none-eabi`).
 - **Local-first**: The daemon binds its API to `127.0.0.1` only. Zero telemetry, zero cloud dependency.
 - **TUP envelope**: Every protocol normalizes into the TPT Unified Protocol — CBOR on the wire, JSON for the UI, openly specified in `SPEC-TUP.md`.
-- **Memory-safe**: Written in Rust. Critical state machines are formally verified with [`tpt-telos`](https://crates.io/crates/tpt-telos) (`tpt-protocol-telos`).
+- **Memory-safe**: Written in Rust. Critical state machines are formally verified with `tpt-protocol-telos` (in this repository; not published).
 
 ## License
 
