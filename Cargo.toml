@@ -42,14 +42,14 @@ repository = "https://github.com/tpt-protocol/tpt-protocol"
 [workspace.dependencies]
 tpt-protocol-tup = { version = "0.1.0", path = "crates/tpt-protocol-tup", default-features = false }
 tpt-protocol-core = { version = "0.1.0", path = "crates/tpt-protocol-core", default-features = false }
-mavlink = { version = "0.15", default-features = false, features = ["embedded", "common"] }
-minicbor = { version = "0.24", default-features = false }
+mavlink = { version = "0.17", default-features = false, features = ["embedded", "common"] }
+minicbor = { version = "2.3", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive"] }
 serde_json = { version = "1", default-features = false, features = ["alloc"] }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 tpt-telos-parser = { version = "0.1.1" }
-tpt-telos-ir = { version = "0.1.1" }
+tpt-telos-ir = { version = "0.2.0" }
 tpt-telos-verifier = { version = "0.1.1" }
 
 [profile.release]
