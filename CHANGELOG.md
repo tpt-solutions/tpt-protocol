@@ -60,6 +60,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **MAVLink:** every dialect message has its name and numeric id (previously four were named). Frames carry the
+  decoded `MavMessage`, and the normalizer reads typed fields for HEARTBEAT, SYS_STATUS, ATTITUDE and GPS_RAW_INT. The
+  v2 signature block is kept on signed frames. Trailing bytes after a frame are an error. `MavlinkMessageId` is replaced
+  by `message_id` (u32) and `message_name`.
 - **OCPP:** the parser reads OCPP-J (JSON over WebSocket): Call, CallResult and CallError, with the payload kept as
   raw JSON. The previous binary framing was not OCPP. Message ids are limited to 36 characters.
 - **Modbus:** `try_parse` frames streams. It returns `Ok(None)` for an incomplete frame and the exact consumed
