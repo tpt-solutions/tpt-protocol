@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -176,6 +177,17 @@ impl CoapCode {
     }
 }
 
+/// Decodes an unsigned integer option of at most `max` bytes.
+fn uint_option(value: &[u8], max: usize, name: &str) -> Result<u32, Error> {
+    if value.len() > max {
+        return Err(Error::Parse(format!(
+            "coap {name} is {} bytes, at most {max} allowed",
+            value.len()
+        )));
+    }
+    Ok(value.iter().fold(0u32, |acc, &b| (acc << 8) | b as u32))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoapOption {
     UriPath(Vec<String>),
@@ -247,6 +259,10 @@ impl FrameParser for CoapParser {
                 break;
             }
             if bytes[offset] == 0xFF {
+                // RFC 7252 3: the marker must be followed by at least one payload byte.
+                if offset + 1 == bytes.len() {
+                    return Err(Error::Parse("coap payload marker with no payload".into()));
+                }
                 offset += 1;
                 break;
             }
@@ -299,7 +315,9 @@ impl FrameParser for CoapParser {
                 return Err(Error::Parse("option len reserved (15)".into()));
             };
 
-            let option_number = prev_option_number.wrapping_add(delta);
+            let option_number = prev_option_number
+                .checked_add(delta)
+                .ok_or_else(|| Error::Parse("coap option number overflows".into()))?;
             prev_option_number = option_number;
 
             if offset + len as usize > bytes.len() {
@@ -309,37 +327,19 @@ impl FrameParser for CoapParser {
             offset += len as usize;
 
             let option = match option_number {
+                // Uri-Path: each option is one path segment, and it must be UTF-8.
                 11 => {
-                    let s = core::str::from_utf8(&opt_value).unwrap_or("");
-                    let parts: Vec<String> = if s.contains('/') {
-                        s.split('/').map(|p| p.into()).collect()
-                    } else {
-                        alloc::vec![s.into()]
-                    };
-                    CoapOption::UriPath(parts)
+                    let segment = core::str::from_utf8(&opt_value)
+                        .map_err(|_| Error::Parse("coap Uri-Path is not UTF-8".into()))?;
+                    CoapOption::UriPath(alloc::vec![segment.into()])
                 }
+                // Unsigned integer options: 0-N bytes, big-endian, longer is invalid (RFC 7252 3.2).
                 12 => {
-                    if opt_value.len() >= 2 {
-                        CoapOption::ContentFormat(u16::from_be_bytes([opt_value[0], opt_value[1]]))
-                    } else if opt_value.len() == 1 {
-                        CoapOption::ContentFormat(opt_value[0] as u16)
-                    } else {
-                        CoapOption::ContentFormat(0)
-                    }
+                    CoapOption::ContentFormat(uint_option(&opt_value, 2, "Content-Format")? as u16)
                 }
-                14 => {
-                    let mut age_buf = [0u8; 4];
-                    let age_len = opt_value.len().min(4);
-                    age_buf[4 - age_len..].copy_from_slice(&opt_value[..age_len]);
-                    CoapOption::MaxAge(u32::from_be_bytes(age_buf))
-                }
+                14 => CoapOption::MaxAge(uint_option(&opt_value, 4, "Max-Age")?),
                 4 => CoapOption::ETag(opt_value),
-                6 => CoapOption::Observe({
-                    let mut obs_buf = [0u8; 4];
-                    let obs_len = opt_value.len().min(4);
-                    obs_buf[4 - obs_len..].copy_from_slice(&opt_value[..obs_len]);
-                    u32::from_be_bytes(obs_buf)
-                }),
+                6 => CoapOption::Observe(uint_option(&opt_value, 3, "Observe")?),
                 other => CoapOption::Other {
                     number: other,
                     value: opt_value,
@@ -535,6 +535,79 @@ mod tests {
             observe_counter: 0,
         };
         assert!(v.validate(&s).is_err());
+    }
+    /// Header: version 1, CON, token length 0, GET, message id 1.
+    fn coap_header() -> Vec<u8> {
+        alloc::vec![0x40, 0x01, 0x00, 0x01]
+    }
+
+    #[test]
+    fn option_number_overflow_is_rejected() {
+        // Option delta 14 (16-bit extension 0xFFFF + 269) twice overflows u16.
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xE0, 0xFF, 0xFF, 0xE0, 0xFF, 0xFF]);
+        assert!(CoapParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn payload_marker_without_payload_is_rejected() {
+        let mut bytes = coap_header();
+        bytes.push(0xFF);
+        assert!(CoapParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn payload_marker_with_payload_is_accepted() {
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xFF, 0x7B]);
+        let frame = CoapParser.parse(&bytes).unwrap();
+        assert_eq!(frame.payload, alloc::vec![0x7B]);
+    }
+
+    #[test]
+    fn uri_path_segments_are_one_per_option() {
+        // Two Uri-Path options (number 11): "sensor" and "a/b". The slash is data.
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xB6]); // delta 11, length 6
+        bytes.extend_from_slice(b"sensor");
+        bytes.extend_from_slice(&[0x03]); // delta 0, length 3
+        bytes.extend_from_slice(b"a/b");
+        let frame = CoapParser.parse(&bytes).unwrap();
+        assert_eq!(
+            frame.options,
+            alloc::vec![
+                CoapOption::UriPath(alloc::vec!["sensor".into()]),
+                CoapOption::UriPath(alloc::vec!["a/b".into()]),
+            ]
+        );
+    }
+
+    #[test]
+    fn uri_path_must_be_utf8() {
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xB1, 0xFF]); // one byte, not UTF-8
+        assert!(CoapParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn uint_options_reject_values_longer_than_their_maximum() {
+        // Max-Age (14) with 5 bytes.
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xD5, 0x01, 0x00, 0x00, 0x00, 0x01]);
+        assert!(CoapParser.parse(&bytes).is_err());
+        // Content-Format (12) with 3 bytes.
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0xC3, 0x00, 0x00, 0x00]);
+        assert!(CoapParser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn uint_options_decode_big_endian() {
+        // Observe (option 6) with the 2-byte value 0x0102, big-endian.
+        let mut bytes = coap_header();
+        bytes.extend_from_slice(&[0x62, 0x01, 0x02]); // option 6 (Observe), 2 bytes
+        let frame = CoapParser.parse(&bytes).unwrap();
+        assert_eq!(frame.options, alloc::vec![CoapOption::Observe(0x0102)]);
     }
 }
 

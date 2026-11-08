@@ -60,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **CoAP:** option numbers no longer wrap silently. A payload marker with no payload is an error. Uri-Path is one
+  UTF-8 segment per option, and invalid UTF-8 is an error. Max-Age, Observe and Content-Format longer than their
+  maximum are errors.
 - **CANopen:** COB-ID function codes follow CiA 301. Function code 1 is SYNC only for node 0 and Emergency
   otherwise. TPDO3, RPDO3, TPDO4 and RPDO4 are added.
 - **J1939:** the PGN includes the EDP bit, and PDU1 frames mask out the destination address. TC1 is PGN 0,
