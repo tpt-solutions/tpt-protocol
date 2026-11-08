@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
 ### Changed
+- **OCPP:** the parser reads OCPP-J (JSON over WebSocket): Call, CallResult and CallError, with the payload kept as
+  raw JSON. The previous binary framing was not OCPP. Message ids are limited to 36 characters.
 - **Modbus:** `try_parse` frames streams. It returns `Ok(None)` for an incomplete frame and the exact consumed
   length. TCP uses the MBAP length, and RTU takes the shortest CRC-valid prefix. RTU framing can be ambiguous
   by chance (about 1 in 65,536 per candidate length).
