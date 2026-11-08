@@ -5,8 +5,8 @@ Background service for the [TPT Protocol](https://github.com/tpt-protocol/tpt-pr
 The daemon is a `std` binary crate that drives every protocol crate in the
 workspace through a common plugin interface and streams normalized TUP data
 to local clients over WebSocket. It can read real bytes over **TCP** (client
-or listener) and **UDP**. Serial and CAN are not implemented (see
-[_Known gaps_](#known-gaps) below).
+or listener), **UDP**, and **serial** (with the `serial` cargo feature). CAN is
+not implemented (see [_Known gaps_](#known-gaps) below).
 
 ## Status / Conformance
 
@@ -114,6 +114,8 @@ of three flags:
 - `--tcp-connect HOST:PORT`: connects to a device and reconnects when the link drops.
 - `--tcp-listen ADDR:PORT`: accepts devices, one task per connection.
 - `--udp-bind ADDR:PORT`: receives datagrams. Each datagram must hold whole frames.
+- `--serial PATH --baud N`: reads a serial port, reopening it when it disappears.
+  Build with `--features serial`. Without the feature the flag fails with a clear error.
 
 A stream that fails to parse discards its buffer and resyncs. Frames that parse
 but carry no data (such as Modbus read requests) are skipped. The

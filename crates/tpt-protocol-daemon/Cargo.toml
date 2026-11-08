@@ -43,7 +43,12 @@ serde_json = { workspace = true, features = ["std"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
+tokio-serial = { version = "5", optional = true }
 futures-util = "0.3"
 anyhow = "1"
 toml = "0.8"
 hex = { workspace = true }
+
+[features]
+# Serial ports (Linux, macOS, Windows). Off by default: it needs an attached port to exercise.
+serial = ["dep:tokio-serial"]

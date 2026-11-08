@@ -1,11 +1,12 @@
-//! Real transports: TCP (client or listener) and UDP.
+//! Real transports: TCP (client or listener), UDP and serial.
 //!
 //! Bytes are framed with the protocol's `try_parse` and normalized into TUP
-//! data points. A stream that fails to parse drops its buffer and resyncs. Frames
-//! that parse but carry no data (such as read requests) are skipped and counted.
+//! data points. A stream that fails to parse drops its buffer and resyncs.
+//! Frames that parse but carry no data (such as read requests) are skipped and
+//! counted. Serial ports need the `serial` cargo feature.
 //!
-//! Serial and CAN backends are deferred: they need platform-specific code and
-//! hardware to test, and neither is available here.
+//! CAN (SocketCAN) is still deferred: it is Linux-only and needs a CAN
+//! interface to test.
 
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use tpt_protocol_tup::DataPoint;
 
 use crate::plugins;
 
-/// How long a TCP client waits before reconnecting.
+/// How long a client waits before reconnecting.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 /// Largest buffered-but-unframed byte count before the stream resyncs.
 const MAX_BUFFER: usize = 64 * 1024;
@@ -31,6 +32,8 @@ pub enum Endpoint {
     TcpListen(String),
     /// Receive datagrams. Each datagram holds whole frames.
     UdpBind(String),
+    /// Read a serial port, reopening it when it fails. Needs the `serial` feature.
+    Serial { path: String, baud: u32 },
 }
 
 impl Endpoint {
@@ -39,11 +42,14 @@ impl Endpoint {
         tcp_connect: Option<String>,
         tcp_listen: Option<String>,
         udp_bind: Option<String>,
+        serial: Option<String>,
+        baud: u32,
     ) -> Result<Option<Self>> {
         let chosen: Vec<Endpoint> = [
             tcp_connect.map(Endpoint::TcpConnect),
             tcp_listen.map(Endpoint::TcpListen),
             udp_bind.map(Endpoint::UdpBind),
+            serial.map(|path| Endpoint::Serial { path, baud }),
         ]
         .into_iter()
         .flatten()
@@ -51,7 +57,7 @@ impl Endpoint {
         match chosen.len() {
             0 => Ok(None),
             1 => Ok(chosen.into_iter().next()),
-            _ => bail!("choose only one of --tcp-connect, --tcp-listen and --udp-bind"),
+            _ => bail!("choose only one of --tcp-connect, --tcp-listen, --udp-bind and --serial"),
         }
     }
 }
@@ -158,9 +164,8 @@ pub async fn run_udp(
         let (n, peer) = socket.recv_from(&mut datagram).await?;
         let mut buf = datagram[..n].to_vec();
         let mut points = Vec::new();
-        match drain(&protocol, &mut buf, &mut points) {
-            Ok(_) => {}
-            Err(e) => eprintln!("{protocol}: {peer}: {e}"),
+        if let Err(e) = drain(&protocol, &mut buf, &mut points) {
+            eprintln!("{protocol}: {peer}: {e}");
         }
         if !buf.is_empty() {
             eprintln!(
@@ -172,6 +177,41 @@ pub async fn run_udp(
             let _ = tx.send(dp);
         }
     }
+}
+
+/// Opens a serial port and reads it, reopening whenever it fails or closes.
+#[cfg(feature = "serial")]
+pub async fn run_serial(
+    path: String,
+    baud: u32,
+    protocol: String,
+    tx: broadcast::Sender<DataPoint>,
+) -> Result<()> {
+    use tokio_serial::SerialPortBuilderExt;
+    loop {
+        match tokio_serial::new(&path, baud).open_native_async() {
+            Ok(port) => {
+                eprintln!("{protocol}: opened {path} at {baud} baud");
+                if let Err(e) = pump(port, &protocol, &tx).await {
+                    eprintln!("{protocol}: reading {path} failed: {e}");
+                }
+                eprintln!("{protocol}: {path} closed");
+            }
+            Err(e) => eprintln!("{protocol}: open {path} failed: {e}"),
+        }
+        tokio::time::sleep(RECONNECT_DELAY).await;
+    }
+}
+
+/// Without the `serial` feature there is no port driver, so serial endpoints fail.
+#[cfg(not(feature = "serial"))]
+pub async fn run_serial(
+    _path: String,
+    _baud: u32,
+    _protocol: String,
+    _tx: broadcast::Sender<DataPoint>,
+) -> Result<()> {
+    bail!("serial ports need the daemon to be built with the `serial` feature")
 }
 
 /// Binds the endpoint and runs it until it fails.
@@ -186,6 +226,7 @@ pub async fn run(
             run_tcp_listen(TcpListener::bind(&addr).await?, protocol, tx).await
         }
         Endpoint::UdpBind(addr) => run_udp(UdpSocket::bind(&addr).await?, protocol, tx).await,
+        Endpoint::Serial { path, baud } => run_serial(path, baud, protocol, tx).await,
     }
 }
 
@@ -248,10 +289,19 @@ mod tests {
 
     #[test]
     fn endpoint_rejects_more_than_one_choice() {
-        assert!(matches!(Endpoint::from_flags(None, None, None), Ok(None)));
-        assert!(Endpoint::from_flags(Some("a".into()), Some("b".into()), None).is_err());
         assert!(matches!(
-            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into())),
+            Endpoint::from_flags(None, None, None, None, 9600),
+            Ok(None)
+        ));
+        assert!(
+            Endpoint::from_flags(Some("a".into()), Some("b".into()), None, None, 9600).is_err()
+        );
+        assert!(matches!(
+            Endpoint::from_flags(None, None, None, Some("/dev/ttyUSB0".into()), 9600),
+            Ok(Some(Endpoint::Serial { ref path, baud: 9600 })) if path == "/dev/ttyUSB0"
+        ));
+        assert!(matches!(
+            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into()), None, 9600),
             Ok(Some(Endpoint::UdpBind(ref a))) if a == "0.0.0.0:502"
         ));
     }
@@ -298,7 +348,7 @@ mod tests {
         let (tx, mut rx) = broadcast::channel(16);
         tokio::spawn(run_tcp_connect(addr, "modbus".into(), tx));
 
-        // First connection sends one frame and closes. The client reconnects.
+        // The first connection sends one frame and closes. The client reconnects.
         let (mut first, _) = listener.accept().await.unwrap();
         first.write_all(&WRITE_REGISTER).await.unwrap();
         drop(first);
@@ -330,6 +380,33 @@ mod tests {
         let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         sender.send_to(&WRITE_REGISTER, addr).await.unwrap();
         let dp = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dp.value, TupValue::Int(10));
+    }
+
+    /// Runs against a real serial port pair. Set TPT_TEST_SERIAL_READ to the
+    /// port the daemon reads and TPT_TEST_SERIAL_PATH to the port the test
+    /// writes, such as the two ends of a `socat` pseudo-terminal pair. Run with
+    /// `cargo test --features serial -- --ignored`.
+    #[cfg(feature = "serial")]
+    #[tokio::test]
+    #[ignore = "needs a serial port pair (see the doc comment)"]
+    async fn serial_port_decodes_frames() {
+        use tokio_serial::SerialPortBuilderExt;
+        let read_path = std::env::var("TPT_TEST_SERIAL_READ").expect("TPT_TEST_SERIAL_READ");
+        let write_path = std::env::var("TPT_TEST_SERIAL_PATH").expect("TPT_TEST_SERIAL_PATH");
+        let (tx, mut rx) = broadcast::channel(16);
+        tokio::spawn(run_serial(read_path, 115_200, "modbus".into(), tx));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let mut writer = tokio_serial::new(&write_path, 115_200)
+            .open_native_async()
+            .unwrap();
+        // Modbus RTU: Write Single Register (slave 1, address 1, value 10).
+        let rtu = [0x01, 0x06, 0x00, 0x01, 0x00, 0x0A, 0x58, 0x0D]; // CRC 0x0D58, low byte first
+        writer.write_all(&rtu).await.unwrap();
+        let dp = tokio::time::timeout(Duration::from_secs(10), rx.recv())
             .await
             .unwrap()
             .unwrap();

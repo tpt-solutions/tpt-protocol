@@ -76,6 +76,12 @@ struct Args {
     /// Receive UDP datagrams on ADDR:PORT. Each datagram holds whole frames.
     #[arg(long = "udp-bind")]
     udp_bind: Option<String>,
+    /// Read a serial port (needs the `serial` feature).
+    #[arg(long = "serial")]
+    serial: Option<String>,
+    /// Serial port speed in baud.
+    #[arg(long = "baud", default_value_t = 115_200)]
+    baud: u32,
 }
 
 #[derive(Deserialize, Default)]
@@ -402,6 +408,8 @@ async fn main() -> Result<()> {
         args.tcp_connect.clone(),
         args.tcp_listen.clone(),
         args.udp_bind.clone(),
+        args.serial.clone(),
+        args.baud,
     )?;
 
     if let Some(ref token) = args.token {
