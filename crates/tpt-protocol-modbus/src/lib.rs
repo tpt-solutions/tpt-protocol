@@ -65,6 +65,15 @@ pub enum ModbusFrame {
         quantity: u16,
         values: Vec<u16>,
     },
+    /// Read response for FC 0x01-0x04. `bytes` is the data after the byte count.
+    ReadResponse { function_code: u8, bytes: Vec<u8> },
+    /// Response to FC 0x10: echoes the start address and quantity.
+    WriteMultipleResponse { address: u16, quantity: u16 },
+    /// Exception response. `function_code` is the request's code without bit 7.
+    Exception {
+        function_code: u8,
+        exception_code: u8,
+    },
     /// Any unrecognized function code.
     Raw { function_code: u8, data: Vec<u8> },
 }
@@ -111,6 +120,20 @@ impl fmt::Display for ModbusFrame {
                     values.len()
                 )
             }
+            Self::ReadResponse {
+                function_code,
+                bytes,
+            } => write!(f, "ReadResponse(fc={function_code}, {} bytes)", bytes.len()),
+            Self::WriteMultipleResponse { address, quantity } => {
+                write!(f, "WriteMultipleResponse(addr={address}, qty={quantity})")
+            }
+            Self::Exception {
+                function_code,
+                exception_code,
+            } => write!(
+                f,
+                "Exception(fc=0x{function_code:02X}, code={exception_code})"
+            ),
             Self::Raw {
                 function_code,
                 data,
@@ -127,6 +150,8 @@ pub struct ModbusRtuFrame {
     pub slave_address: u8,
     pub frame: ModbusFrame,
     pub crc: u16,
+    /// MBAP transaction id, present only for TCP frames.
+    pub transaction_id: Option<u16>,
 }
 
 impl fmt::Display for ModbusRtuFrame {
@@ -166,12 +191,37 @@ impl fmt::Display for ModbusTcpFrame {
 /// Detection – if bytes [2..4] == 0x0000 *and* the TCP length field
 /// (bytes [4..6]) is consistent with the available data, the frame is
 /// treated as TCP.  Otherwise it is parsed as RTU.
-#[derive(Clone, Debug, Default)]
-pub struct ModbusParser;
+/// Which side of an exchange the bytes come from. Requests and responses share
+/// function codes but have different layouts, and neither TCP nor RTU framing
+/// says which one a frame is, so the caller chooses with the parser constructor.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Direction {
+    /// Client-to-server frames (the default).
+    #[default]
+    Request,
+    /// Server-to-client frames: read data, write echoes and exceptions.
+    Response,
+}
+
+/// Parses Modbus RTU or TCP frames. See [`Direction`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModbusParser {
+    direction: Direction,
+}
 
 impl ModbusParser {
+    /// Parser for request frames.
     pub fn new() -> Self {
-        Self
+        Self {
+            direction: Direction::Request,
+        }
+    }
+
+    /// Parser for response frames.
+    pub fn response() -> Self {
+        Self {
+            direction: Direction::Response,
+        }
     }
 }
 
@@ -186,14 +236,21 @@ impl FrameParser for ModbusParser {
             )));
         }
 
-        // TCP if protocol ID == 0x0000 AND the length field fits.
-        let looks_like_tcp = bytes.len() >= 8 && bytes[2] == 0x00 && bytes[3] == 0x00 && {
-            let tcp_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
-            6 + tcp_len <= bytes.len()
-        };
+        // A frame whose trailing RTU CRC checks out is RTU. Without this check,
+        // an RTU frame with zero bytes at offsets 2-3 would look like TCP.
+        let n = bytes.len();
+        let rtu_crc_ok =
+            crc16_modbus(&bytes[..n - 2]) == u16::from_le_bytes([bytes[n - 2], bytes[n - 1]]);
+        // Otherwise TCP if the protocol ID is 0x0000 and the length field fits.
+        let looks_like_tcp =
+            !rtu_crc_ok && bytes.len() >= 8 && bytes[2] == 0x00 && bytes[3] == 0x00 && {
+                let tcp_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+                // The MBAP length counts unit id + PDU, so it must be at least 2.
+                tcp_len >= 2 && 6 + tcp_len <= bytes.len()
+            };
 
         if looks_like_tcp {
-            let (_tid, uid, frame) = parse_tcp_pdu(bytes)?;
+            let (tid, uid, frame) = parse_tcp_pdu(bytes, self.direction)?;
             let mut raw = Vec::with_capacity(bytes.len() + 4);
             raw.push(uid);
             raw.push(frame_to_func_code(&frame));
@@ -203,13 +260,15 @@ impl FrameParser for ModbusParser {
                 slave_address: uid,
                 frame,
                 crc,
+                transaction_id: Some(tid),
             })
         } else {
-            let (addr, frame, crc) = parse_rtu_pdu(bytes)?;
+            let (addr, frame, crc) = parse_rtu_pdu(bytes, self.direction)?;
             Ok(ModbusRtuFrame {
                 slave_address: addr,
                 frame,
                 crc,
+                transaction_id: None,
             })
         }
     }
@@ -233,6 +292,9 @@ fn frame_to_func_code(frame: &ModbusFrame) -> u8 {
         ModbusFrame::ReadExceptionStatus { .. } => 0x07,
         ModbusFrame::Diagnostics { .. } => 0x08,
         ModbusFrame::WriteMultipleRegisters { .. } => 0x10,
+        ModbusFrame::ReadResponse { function_code, .. } => *function_code,
+        ModbusFrame::WriteMultipleResponse { .. } => 0x10,
+        ModbusFrame::Exception { function_code, .. } => function_code | 0x80,
         ModbusFrame::Raw { function_code, .. } => *function_code,
     }
 }
@@ -285,11 +347,24 @@ fn pdu_data(frame: &ModbusFrame) -> Vec<u8> {
             }
             d
         }
+        ModbusFrame::ReadResponse { bytes, .. } => {
+            let mut d = Vec::with_capacity(1 + bytes.len());
+            d.push(bytes.len() as u8);
+            d.extend_from_slice(bytes);
+            d
+        }
+        ModbusFrame::WriteMultipleResponse { address, quantity } => {
+            let mut d = Vec::with_capacity(4);
+            d.extend_from_slice(&address.to_be_bytes());
+            d.extend_from_slice(&quantity.to_be_bytes());
+            d
+        }
+        ModbusFrame::Exception { exception_code, .. } => alloc::vec![*exception_code],
         ModbusFrame::Raw { data, .. } => data.clone(),
     }
 }
 
-fn parse_rtu_pdu(bytes: &[u8]) -> Result<(u8, ModbusFrame, u16), Error> {
+fn parse_rtu_pdu(bytes: &[u8], dir: Direction) -> Result<(u8, ModbusFrame, u16), Error> {
     if bytes.len() < 4 {
         return Err(Error::Parse(format!(
             "RTU frame too short: {} bytes",
@@ -299,7 +374,6 @@ fn parse_rtu_pdu(bytes: &[u8]) -> Result<(u8, ModbusFrame, u16), Error> {
 
     let slave_address = bytes[0];
     let func = bytes[1];
-    let data_len = bytes.len() - 4; // minus addr, func, CRC(2)
     let data = &bytes[2..bytes.len() - 2];
 
     // Validate CRC.
@@ -312,11 +386,11 @@ fn parse_rtu_pdu(bytes: &[u8]) -> Result<(u8, ModbusFrame, u16), Error> {
         )));
     }
 
-    let frame = parse_pdu(func, data, data_len)?;
+    let frame = parse_pdu(func, data, dir)?;
     Ok((slave_address, frame, expected_crc))
 }
 
-fn parse_tcp_pdu(bytes: &[u8]) -> Result<(u16, u8, ModbusFrame), Error> {
+fn parse_tcp_pdu(bytes: &[u8], dir: Direction) -> Result<(u16, u8, ModbusFrame), Error> {
     if bytes.len() < 8 {
         return Err(Error::Parse(format!(
             "TCP frame too short: {} bytes",
@@ -333,6 +407,11 @@ fn parse_tcp_pdu(bytes: &[u8]) -> Result<(u16, u8, ModbusFrame), Error> {
     }
 
     let length = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    if length < 2 {
+        return Err(Error::Parse(format!(
+            "invalid MBAP length: {length}, need at least 2 (unit id + function code)"
+        )));
+    }
     if bytes.len() < 6 + length {
         return Err(Error::Parse(format!(
             "TCP frame truncated: have {} bytes, need {}",
@@ -345,61 +424,69 @@ fn parse_tcp_pdu(bytes: &[u8]) -> Result<(u16, u8, ModbusFrame), Error> {
     let func = bytes[7];
     let data = &bytes[8..6 + length];
 
-    let frame = parse_pdu(func, data, data.len())?;
+    let frame = parse_pdu(func, data, dir)?;
     Ok((tid, unit_id, frame))
 }
 
-fn parse_pdu(func: u8, data: &[u8], _data_len: usize) -> Result<ModbusFrame, Error> {
+fn parse_pdu(func: u8, data: &[u8], dir: Direction) -> Result<ModbusFrame, Error> {
+    if func & 0x80 != 0 {
+        // Exception response: the request's function code with bit 7 set,
+        // followed by exactly one exception code.
+        return match data {
+            [code] => Ok(ModbusFrame::Exception {
+                function_code: func & 0x7F,
+                exception_code: *code,
+            }),
+            _ => Err(Error::Parse(format!(
+                "exception response needs exactly 1 byte, got {}",
+                data.len()
+            ))),
+        };
+    }
     match func {
-        0x01 => {
-            if data.len() < 4 {
-                return Err(Error::Parse(
-                    "ReadCoils: need 4 bytes (addr+quantity)".into(),
-                ));
+        0x01..=0x04 => match dir {
+            Direction::Request => {
+                let (address, quantity) = fixed_pair(func, data)?;
+                let max = if func <= 0x02 { 2000 } else { 125 };
+                check_quantity(func, quantity, max)?;
+                Ok(match func {
+                    0x01 => ModbusFrame::ReadCoils { address, quantity },
+                    0x02 => ModbusFrame::ReadDiscreteInputs { address, quantity },
+                    0x03 => ModbusFrame::ReadHoldingRegisters { address, quantity },
+                    _ => ModbusFrame::ReadInputRegisters { address, quantity },
+                })
             }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let quantity = u16::from_be_bytes([data[2], data[3]]);
-            Ok(ModbusFrame::ReadCoils { address, quantity })
-        }
-        0x02 => {
-            if data.len() < 4 {
-                return Err(Error::Parse("ReadDiscreteInputs: need 4 bytes".into()));
+            Direction::Response => {
+                let (&byte_count, bytes) = data.split_first().ok_or_else(|| {
+                    Error::Parse(format!("read response for function 0x{func:02X} is empty"))
+                })?;
+                if byte_count == 0 || bytes.len() != byte_count as usize {
+                    return Err(Error::Parse(format!(
+                        "read response byte_count {byte_count} does not match {} data bytes",
+                        bytes.len()
+                    )));
+                }
+                Ok(ModbusFrame::ReadResponse {
+                    function_code: func,
+                    bytes: bytes.to_vec(),
+                })
             }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let quantity = u16::from_be_bytes([data[2], data[3]]);
-            Ok(ModbusFrame::ReadDiscreteInputs { address, quantity })
-        }
-        0x03 => {
-            if data.len() < 4 {
-                return Err(Error::Parse("ReadHoldingRegisters: need 4 bytes".into()));
-            }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let quantity = u16::from_be_bytes([data[2], data[3]]);
-            Ok(ModbusFrame::ReadHoldingRegisters { address, quantity })
-        }
-        0x04 => {
-            if data.len() < 4 {
-                return Err(Error::Parse("ReadInputRegisters: need 4 bytes".into()));
-            }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let quantity = u16::from_be_bytes([data[2], data[3]]);
-            Ok(ModbusFrame::ReadInputRegisters { address, quantity })
-        }
+        },
         0x05 => {
-            if data.len() < 4 {
-                return Err(Error::Parse("WriteSingleCoil: need 4 bytes".into()));
-            }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let raw = u16::from_be_bytes([data[2], data[3]]);
-            let value = raw == 0xFF00;
+            let (address, raw) = fixed_pair(func, data)?;
+            let value = match raw {
+                0xFF00 => true,
+                0x0000 => false,
+                other => {
+                    return Err(Error::Parse(format!(
+                        "WriteSingleCoil: invalid value 0x{other:04X}, expected 0xFF00 or 0x0000"
+                    )))
+                }
+            };
             Ok(ModbusFrame::WriteSingleCoil { address, value })
         }
         0x06 => {
-            if data.len() < 4 {
-                return Err(Error::Parse("WriteSingleRegister: need 4 bytes".into()));
-            }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let value = u16::from_be_bytes([data[2], data[3]]);
+            let (address, value) = fixed_pair(func, data)?;
             Ok(ModbusFrame::WriteSingleRegister { address, value })
         }
         0x07 => {
@@ -421,38 +508,66 @@ fn parse_pdu(func: u8, data: &[u8], _data_len: usize) -> Result<ModbusFrame, Err
                 data: payload,
             })
         }
-        0x10 => {
-            if data.len() < 5 {
-                return Err(Error::Parse(
-                    "WriteMultipleRegisters: need at least 5 bytes".into(),
-                ));
-            }
-            let address = u16::from_be_bytes([data[0], data[1]]);
-            let quantity = u16::from_be_bytes([data[2], data[3]]);
-            let _byte_count = data[4] as usize;
-            let mut values = Vec::with_capacity((quantity as usize).min(MAX_MODBUS_REGISTERS));
-            let mut offset = 5;
-            for _ in 0..quantity as usize {
-                if offset + 2 > data.len() {
+        0x10 => match dir {
+            Direction::Request => {
+                if data.len() < 5 {
                     return Err(Error::Parse(
-                        "WriteMultipleRegisters: truncated register data".into(),
+                        "WriteMultipleRegisters: need at least 5 bytes".into(),
                     ));
                 }
-                let v = u16::from_be_bytes([data[offset], data[offset + 1]]);
-                values.push(v);
-                offset += 2;
+                let address = u16::from_be_bytes([data[0], data[1]]);
+                let quantity = u16::from_be_bytes([data[2], data[3]]);
+                check_quantity(func, quantity, 123)?;
+                let byte_count = data[4] as usize;
+                if byte_count != 2 * quantity as usize || data.len() != 5 + byte_count {
+                    return Err(Error::Parse(format!(
+                        "WriteMultipleRegisters: byte_count {byte_count} does not match \
+                         quantity {quantity} and {} data bytes",
+                        data.len() - 5
+                    )));
+                }
+                let values: Vec<u16> = data[5..]
+                    .chunks_exact(2)
+                    .take(MAX_MODBUS_REGISTERS)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+                Ok(ModbusFrame::WriteMultipleRegisters {
+                    address,
+                    quantity,
+                    values,
+                })
             }
-            Ok(ModbusFrame::WriteMultipleRegisters {
-                address,
-                quantity,
-                values,
-            })
-        }
+            Direction::Response => {
+                let (address, quantity) = fixed_pair(func, data)?;
+                check_quantity(func, quantity, 123)?;
+                Ok(ModbusFrame::WriteMultipleResponse { address, quantity })
+            }
+        },
         _ => Ok(ModbusFrame::Raw {
             function_code: func,
             data: data.to_vec(),
         }),
     }
+}
+
+/// Reads exactly two big-endian words (address and quantity, or address and value).
+fn fixed_pair(func: u8, data: &[u8]) -> Result<(u16, u16), Error> {
+    match data {
+        [a, b, c, d] => Ok((u16::from_be_bytes([*a, *b]), u16::from_be_bytes([*c, *d]))),
+        _ => Err(Error::Parse(format!(
+            "function 0x{func:02X}: expected 4 data bytes, got {}",
+            data.len()
+        ))),
+    }
+}
+
+fn check_quantity(func: u8, quantity: u16, max: u16) -> Result<(), Error> {
+    if quantity == 0 || quantity > max {
+        return Err(Error::Parse(format!(
+            "function 0x{func:02X}: quantity {quantity} is outside 1..={max}"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -509,6 +624,55 @@ impl ModbusNormalizer {
     }
 }
 
+/// Turns the data of a read response into one data point for its first
+/// coil, bit or register. A response does not carry the start address, so
+/// the point id uses the index within the response.
+fn normalize_read_response(
+    device_id: &str,
+    function_code: u8,
+    bytes: &[u8],
+) -> Result<DataPoint, Error> {
+    let (name, value) = match function_code {
+        0x01 | 0x02 => {
+            let first = bytes
+                .first()
+                .ok_or_else(|| Error::Normalize("empty read response".into()))?;
+            let name = if function_code == 0x01 {
+                "coil"
+            } else {
+                "discrete_input"
+            };
+            (name, TupValue::Bool(first & 0x01 != 0))
+        }
+        0x03 | 0x04 => {
+            let [hi, lo, ..] = bytes else {
+                return Err(Error::Normalize(
+                    "register read response has no register".into(),
+                ));
+            };
+            let name = if function_code == 0x03 {
+                "holding_register"
+            } else {
+                "input_register"
+            };
+            (name, TupValue::Int(u16::from_be_bytes([*hi, *lo]) as i64))
+        }
+        other => {
+            return Err(Error::Normalize(format!(
+                "function 0x{other:02X} is not a read response"
+            )))
+        }
+    };
+    Ok(DataPoint::new(
+        SourceProtocol::Modbus,
+        device_id,
+        format!("{name}[0]"),
+        0,
+        value,
+        Quality::Good,
+    ))
+}
+
 impl DataNormalizer for ModbusNormalizer {
     type Frame = ModbusRtuFrame;
 
@@ -517,37 +681,24 @@ impl DataNormalizer for ModbusNormalizer {
         let timestamp = 0; // caller should set a real timestamp
 
         match &frame.frame {
-            ModbusFrame::ReadCoils { address, quantity } => Ok(DataPoint::new(
-                SourceProtocol::Modbus,
-                &device_id,
-                format!("coil:{}", address),
-                timestamp,
-                TupValue::Int(*quantity as i64),
-                Quality::Good,
+            ModbusFrame::ReadCoils { .. }
+            | ModbusFrame::ReadDiscreteInputs { .. }
+            | ModbusFrame::ReadHoldingRegisters { .. }
+            | ModbusFrame::ReadInputRegisters { .. } => Err(Error::Normalize(
+                "read request carries no measured value; normalize the response instead".into(),
             )),
-            ModbusFrame::ReadDiscreteInputs { address, quantity } => Ok(DataPoint::new(
-                SourceProtocol::Modbus,
-                &device_id,
-                format!("discrete_input:{}", address),
-                timestamp,
-                TupValue::Int(*quantity as i64),
-                Quality::Good,
-            )),
-            ModbusFrame::ReadHoldingRegisters { address, quantity } => Ok(DataPoint::new(
-                SourceProtocol::Modbus,
-                &device_id,
-                format!("holding_register:{}", address),
-                timestamp,
-                TupValue::Int(*quantity as i64),
-                Quality::Good,
-            )),
-            ModbusFrame::ReadInputRegisters { address, quantity } => Ok(DataPoint::new(
-                SourceProtocol::Modbus,
-                &device_id,
-                format!("input_register:{}", address),
-                timestamp,
-                TupValue::Int(*quantity as i64),
-                Quality::Good,
+            ModbusFrame::ReadResponse {
+                function_code,
+                bytes,
+            } => normalize_read_response(&device_id, *function_code, bytes),
+            ModbusFrame::Exception {
+                function_code,
+                exception_code,
+            } => Err(Error::Normalize(format!(
+                "modbus exception 0x{exception_code:02X} for function 0x{function_code:02X}"
+            ))),
+            ModbusFrame::WriteMultipleResponse { .. } => Err(Error::Normalize(
+                "write-multiple response carries no value".into(),
             )),
             ModbusFrame::WriteSingleCoil { address, value } => Ok(DataPoint::new(
                 SourceProtocol::Modbus,
@@ -623,6 +774,7 @@ impl DataNormalizer for ModbusNormalizer {
 mod tests {
     use super::*;
     use alloc::string::ToString;
+    use alloc::vec;
 
     // ---- Helper ----
 
@@ -786,6 +938,26 @@ mod tests {
     }
 
     #[test]
+    fn zero_mbap_length_no_panic() {
+        // MBAP length 0 leaves no room for unit id + function code; this used
+        // to pass the TCP heuristic and then slice `bytes[8..6]` (start > end).
+        let parser = ModbusParser::new();
+        let bytes = [
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert!(parser.parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn mbap_length_one_no_panic() {
+        let parser = ModbusParser::new();
+        let bytes = [
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00,
+        ];
+        assert!(parser.parse(&bytes).is_err());
+    }
+
+    #[test]
     fn invalid_protocol_id() {
         let mut bytes = build_tcp_frame(0x0001, 0xFF, 0x03, &[0x00, 0x00, 0x00, 0x05]);
         bytes[3] = 0x01; // invalid protocol ID
@@ -944,6 +1116,132 @@ mod tests {
         let result = parser.parse(&bytes);
         assert!(result.is_err());
     }
+
+    // ---- Responses, exceptions, strict request checks (Phase 11) ----
+
+    fn parse_response(bytes: &[u8]) -> Result<ModbusRtuFrame, Error> {
+        ModbusParser::response().parse(bytes)
+    }
+
+    #[test]
+    fn response_read_holding_registers_is_not_misread_as_request() {
+        // Response: fc=3, byte_count=4, registers 0x000A and 0x0102.
+        let bytes = build_rtu_frame(0x01, 0x03, &[0x04, 0x00, 0x0A, 0x01, 0x02]);
+        let frame = parse_response(&bytes).unwrap();
+        assert_eq!(
+            frame.frame,
+            ModbusFrame::ReadResponse {
+                function_code: 0x03,
+                bytes: vec![0x00, 0x0A, 0x01, 0x02],
+            }
+        );
+        // Read as a request, the same five data bytes are malformed.
+        assert!(ModbusParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn response_byte_count_must_match_data() {
+        let bytes = build_rtu_frame(0x01, 0x03, &[0x05, 0x00, 0x0A, 0x01, 0x02]);
+        assert!(parse_response(&bytes).is_err());
+    }
+
+    #[test]
+    fn exception_response_parses_in_both_directions() {
+        let bytes = build_rtu_frame(0x01, 0x83, &[0x02]);
+        let expected = ModbusFrame::Exception {
+            function_code: 0x03,
+            exception_code: 0x02,
+        };
+        assert_eq!(ModbusParser::new().parse(&bytes).unwrap().frame, expected);
+        assert_eq!(parse_response(&bytes).unwrap().frame, expected);
+    }
+
+    #[test]
+    fn exception_response_needs_exactly_one_code_byte() {
+        assert!(ModbusParser::new()
+            .parse(&build_rtu_frame(0x01, 0x83, &[]))
+            .is_err());
+        assert!(ModbusParser::new()
+            .parse(&build_rtu_frame(0x01, 0x83, &[0x02, 0x00]))
+            .is_err());
+    }
+
+    #[test]
+    fn write_single_coil_rejects_invalid_value() {
+        // Only 0xFF00 (ON) and 0x0000 (OFF) are valid per the spec.
+        let bytes = build_rtu_frame(0x01, 0x05, &[0x00, 0x0A, 0x12, 0x34]);
+        assert!(ModbusParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn read_request_quantity_is_range_checked() {
+        let zero = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 0x00]);
+        let too_many = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 126]);
+        assert!(ModbusParser::new().parse(&zero).is_err());
+        assert!(ModbusParser::new().parse(&too_many).is_err());
+    }
+
+    #[test]
+    fn write_multiple_byte_count_must_match_quantity() {
+        // quantity=2 needs byte_count=4, but the frame says 3.
+        let bytes = build_rtu_frame(0x01, 0x10, &[0x00, 0x00, 0x00, 0x02, 0x03, 0, 1, 0, 2]);
+        assert!(ModbusParser::new().parse(&bytes).is_err());
+    }
+
+    #[test]
+    fn write_multiple_response_parses() {
+        let bytes = build_rtu_frame(0x01, 0x10, &[0x00, 0x00, 0x00, 0x02]);
+        assert_eq!(
+            parse_response(&bytes).unwrap().frame,
+            ModbusFrame::WriteMultipleResponse {
+                address: 0,
+                quantity: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn tcp_transaction_id_is_exposed() {
+        let bytes = build_tcp_frame(0x1234, 0x01, 0x03, &[0x00, 0x00, 0x00, 0x01]);
+        let frame = ModbusParser::new().parse(&bytes).unwrap();
+        assert_eq!(frame.transaction_id, Some(0x1234));
+        let rtu = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(
+            ModbusParser::new().parse(&rtu).unwrap().transaction_id,
+            None
+        );
+    }
+
+    #[test]
+    fn normalize_read_request_has_no_measured_value() {
+        let bytes = build_rtu_frame(0x01, 0x03, &[0x00, 0x00, 0x00, 0x0A]);
+        let frame = ModbusParser::new().parse(&bytes).unwrap();
+        assert!(ModbusNormalizer::new().normalize(&frame).is_err());
+    }
+
+    #[test]
+    fn normalize_read_response_holding_register() {
+        let bytes = build_rtu_frame(0x01, 0x03, &[0x04, 0x00, 0x0A, 0x01, 0x02]);
+        let frame = parse_response(&bytes).unwrap();
+        let dp = ModbusNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.value, TupValue::Int(10));
+        assert_eq!(dp.point_id, "holding_register[0]");
+    }
+
+    #[test]
+    fn normalize_read_response_coil_bit() {
+        let bytes = build_rtu_frame(0x01, 0x01, &[0x01, 0x01]);
+        let frame = parse_response(&bytes).unwrap();
+        let dp = ModbusNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.value, TupValue::Bool(true));
+        assert_eq!(dp.point_id, "coil[0]");
+    }
+
+    #[test]
+    fn normalize_exception_is_an_error() {
+        let frame = parse_response(&build_rtu_frame(0x01, 0x83, &[0x02])).unwrap();
+        assert!(ModbusNormalizer::new().normalize(&frame).is_err());
+    }
 }
 
 #[cfg(test)]
@@ -958,6 +1256,56 @@ mod fuzz {
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// A TCP frame with a plausible MBAP header. The length field is skewed by
+    /// -2..=2 so the length checks are exercised, not just the happy path.
+    fn mbap_frame() -> impl Strategy<Value = Vec<u8>> {
+        (
+            any::<u16>(),
+            any::<u8>(),
+            any::<u8>(),
+            proptest::collection::vec(any::<u8>(), 0..64),
+            -2i32..=2,
+        )
+            .prop_map(|(tid, unit, func, data, skew)| {
+                let mut pdu = alloc::vec![unit, func];
+                pdu.extend_from_slice(&data);
+                let len = (pdu.len() as i32 + skew).clamp(0, u16::MAX as i32) as u16;
+                let mut out = Vec::new();
+                out.extend_from_slice(&tid.to_be_bytes());
+                out.extend_from_slice(&[0x00, 0x00]);
+                out.extend_from_slice(&len.to_be_bytes());
+                out.extend_from_slice(&pdu);
+                out
+            })
+    }
+
+    /// Applies one random byte overwrite or one truncation to a valid-looking frame.
+    fn mutated_mbap() -> impl Strategy<Value = Vec<u8>> {
+        (mbap_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                if truncate {
+                    bytes.truncate(idx % bytes.len());
+                } else {
+                    let i = idx % bytes.len();
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_mbap_never_panics(bytes in mutated_mbap()) {
+            let parser = ModbusParser::new();
+            let _ = parser.parse(&bytes);
+            let _ = parser.try_parse(&bytes);
         }
     }
 }
