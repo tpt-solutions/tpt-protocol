@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "tpt-protocol-cli"
 version = "0.1.0"
 description = "TPT Protocol terminal UI — ratatui dashboard for live protocol data"
