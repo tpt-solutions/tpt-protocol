@@ -498,17 +498,23 @@ impl DataNormalizer for SparkplugNormalizer {
     }
 
     /// The first metric with a value. A payload with no such metric (for
-    /// example a death certificate) yields a point for its sequence number.
+    /// example a death certificate) yields a point for its sequence number, if
+    /// it has one. A payload with neither has nothing to report.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
         if let Some(point) = self.points(frame).into_iter().next() {
             return Ok(point);
         }
+        let Some(seq) = frame.seq else {
+            return Err(Error::Normalize(
+                "sparkplugb payload has no metric and no sequence number".into(),
+            ));
+        };
         Ok(DataPoint::new(
             SourceProtocol::Sparkplugb,
             Self::device_id(frame),
-            format!("seq:{}", frame.seq.unwrap_or(0)),
+            format!("seq:{seq}"),
             frame.timestamp.unwrap_or(0),
-            TupValue::Int(frame.seq.unwrap_or(0) as i64),
+            TupValue::Int(seq as i64),
             Quality::Good,
         ))
     }
@@ -721,6 +727,13 @@ mod tests {
         let dp = SparkplugNormalizer.normalize(&frame).unwrap();
         assert_eq!(dp.point_id, "seq:9");
         assert_eq!(dp.value, TupValue::Int(9));
+    }
+
+    #[test]
+    fn empty_payload_with_no_sequence_is_an_error_not_a_zero() {
+        // No metric and no sequence number: nothing to report, not "seq:0 = 0".
+        let frame = decode("spBv1.0/Plant1/NDEATH/Edge7", &[]).unwrap();
+        assert!(SparkplugNormalizer.normalize(&frame).is_err());
     }
 
     #[test]
