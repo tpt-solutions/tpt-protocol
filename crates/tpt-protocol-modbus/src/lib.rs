@@ -246,7 +246,9 @@ impl FrameParser for ModbusParser {
             !rtu_crc_ok && bytes.len() >= 8 && bytes[2] == 0x00 && bytes[3] == 0x00 && {
                 let tcp_len = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
                 // The MBAP length counts unit id + PDU, so it must be at least 2.
-                tcp_len >= 2 && 6 + tcp_len <= bytes.len()
+                // `parse` takes one whole frame, so the length must match the input
+                // exactly. Trailing bytes are not part of this frame.
+                tcp_len >= 2 && 6 + tcp_len == bytes.len()
             };
 
         if looks_like_tcp {
@@ -1430,6 +1432,20 @@ mod tests {
             ModbusParser::new().parse(&rtu).unwrap().transaction_id,
             None
         );
+    }
+
+    #[test]
+    fn tcp_length_must_cover_exactly_the_input() {
+        // A valid TCP frame followed by extra bytes: the MBAP length covers only
+        // the first frame, so a whole-buffer parse must not accept the extra bytes.
+        let mut bytes = build_tcp_frame(0x0001, 0x01, 0x03, &[0x00, 0x00, 0x00, 0x01]);
+        let exact = bytes.clone();
+        assert!(ModbusParser::new().parse(&exact).is_ok());
+        bytes.extend_from_slice(&[0xAB, 0xCD, 0xEF, 0x01]);
+        assert!(ModbusParser::new().parse(&bytes).is_err());
+        // Streaming still frames the first message exactly.
+        let (_, used) = ModbusParser::new().try_parse(&bytes).unwrap().unwrap();
+        assert_eq!(used, exact.len());
     }
 
     #[test]
