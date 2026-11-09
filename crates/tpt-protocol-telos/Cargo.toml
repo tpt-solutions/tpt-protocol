@@ -19,6 +19,13 @@ tpt-telos-parser = { workspace = true, optional = true }
 tpt-telos-ir = { workspace = true, optional = true }
 tpt-telos-verifier = { workspace = true, optional = true }
 
+[dev-dependencies]
+# The conformance tests run the real Modbus code against the same contracts the
+# specs state. This is a dev-dependency only, so there is no cycle: the protocol
+# crate does not depend on telos.
+tpt-protocol-core = { workspace = true }
+tpt-protocol-modbus = { path = "../tpt-protocol-modbus" }
+
 [features]
 # Enables the formal-verification harness and the bundled-spec test.
 # Off by default so the crate's dependency surface stays minimal.
