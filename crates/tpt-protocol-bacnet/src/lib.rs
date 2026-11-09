@@ -160,8 +160,65 @@ pub struct BacnetFrame {
     pub service_choice: Option<u8>,
     pub object: Option<BacnetObjectId>,
     pub property_id: Option<u16>,
+    /// The property value of a ReadProperty Complex-ACK, when it is a type this
+    /// crate decodes. Requests carry no value.
+    pub value: Option<BacnetValue>,
     /// Remaining service data after the fields above.
     pub payload: Vec<u8>,
+}
+
+/// An application-tagged value from a ReadProperty answer.
+#[derive(Clone, Debug, PartialEq)]
+pub enum BacnetValue {
+    Null,
+    Boolean(bool),
+    Unsigned(u32),
+    Signed(i32),
+    Real(f32),
+    Double(f64),
+    Enumerated(u32),
+    /// Any other application type, kept as its content octets.
+    Other(Vec<u8>),
+}
+
+/// Decodes one application-tagged value at the front of `data`. Returns the
+/// value and the number of bytes it used. Context-tagged data and extended
+/// lengths are not decoded here.
+fn read_application_value(data: &[u8]) -> Option<(BacnetValue, usize)> {
+    let tag = *data.first()?;
+    if tag & 0x08 != 0 {
+        return None; // context-specific tag, not an application value
+    }
+    let tag_number = tag >> 4;
+    let lvt = usize::from(tag & 0x07);
+    // Booleans keep their value in the length field and have no content octets.
+    if tag_number == 1 {
+        return Some((BacnetValue::Boolean(lvt != 0), 1));
+    }
+    if lvt > 4 && tag_number != 5 {
+        return None; // extended lengths (5, 6, 7) are not decoded
+    }
+    let content = data.get(1..1 + lvt)?;
+    let used = 1 + lvt;
+    let unsigned = || {
+        content
+            .iter()
+            .fold(0u32, |acc, &b| (acc << 8) | u32::from(b))
+    };
+    let value = match tag_number {
+        0 if lvt == 0 => BacnetValue::Null,
+        2 if lvt <= 4 => BacnetValue::Unsigned(unsigned()),
+        3 if (1..=4).contains(&lvt) => {
+            // Sign-extend from the top bit of the first content octet.
+            let shift = 32 - 8 * lvt as u32;
+            BacnetValue::Signed(((unsigned() << shift) as i32) >> shift)
+        }
+        4 if lvt == 4 => BacnetValue::Real(f32::from_be_bytes(content.try_into().ok()?)),
+        5 if lvt == 8 => BacnetValue::Double(f64::from_be_bytes(content.try_into().ok()?)),
+        9 if lvt <= 4 => BacnetValue::Enumerated(unsigned()),
+        _ => BacnetValue::Other(content.to_vec()),
+    };
+    Some((value, used))
 }
 
 impl fmt::Display for BacnetFrame {
@@ -297,6 +354,7 @@ fn parse_bvlc(bytes: &[u8]) -> Result<BacnetFrame, Error> {
         service_choice: None,
         object: None,
         property_id: None,
+        value: None,
         payload: Vec::new(),
     };
     if !bvlc_function.carries_npdu() || body.is_empty() {
@@ -347,13 +405,23 @@ fn parse_apdu(apdu: &[u8], mut frame: BacnetFrame) -> Result<BacnetFrame, Error>
     frame.service_choice = Some(service);
     let data = &rest[service_at + 1..];
 
-    if service == SERVICE_READ_PROPERTY && matches!(apdu_type, ApduType::ConfirmedRequest) && !seg {
+    let read_property_answer = service == SERVICE_READ_PROPERTY
+        && matches!(apdu_type, ApduType::ConfirmedRequest | ApduType::ComplexAck)
+        && !seg;
+    if read_property_answer {
         if let Some((packed, used)) = read_context_u32(data, 0) {
             frame.object = Some(BacnetObjectId::from_packed(packed));
             let after_object = &data[used..];
             if let Some((property, used2)) = read_context_property(after_object, 1) {
                 frame.property_id = Some(property);
-                frame.payload = after_object[used2..].to_vec();
+                let after_property = &after_object[used2..];
+                // A ComplexACK answers with `[3] value [3]`: an opening tag, the value, a closing tag.
+                if matches!(apdu_type, ApduType::ComplexAck) {
+                    if let [0x3E, value @ ..] = after_property {
+                        frame.value = read_application_value(value).map(|(v, _)| v);
+                    }
+                }
+                frame.payload = after_property.to_vec();
                 return Ok(frame);
             }
         }
@@ -425,10 +493,21 @@ impl DataNormalizer for BacnetNormalizer {
             format!("apdu:{}", frame.apdu_type)
         };
         let timestamp = 0;
-        let value = if !frame.payload.is_empty() {
-            TupValue::Bytes(frame.payload.clone())
-        } else {
-            TupValue::Int(0)
+        // A request or an unknown service carries no value, so there is nothing to report.
+        let value = match &frame.value {
+            Some(BacnetValue::Null) | None => {
+                return Err(Error::Normalize(format!(
+                    "BACnet {point_id} carries no value"
+                )))
+            }
+            Some(BacnetValue::Boolean(b)) => TupValue::Bool(*b),
+            Some(BacnetValue::Unsigned(n)) | Some(BacnetValue::Enumerated(n)) => {
+                TupValue::Int(i64::from(*n))
+            }
+            Some(BacnetValue::Signed(n)) => TupValue::Int(i64::from(*n)),
+            Some(BacnetValue::Real(x)) => TupValue::Float(f64::from(*x)),
+            Some(BacnetValue::Double(x)) => TupValue::Float(*x),
+            Some(BacnetValue::Other(bytes)) => TupValue::Bytes(bytes.clone()),
         };
         Ok(DataPoint::new(
             SourceProtocol::Bacnet,
@@ -572,15 +651,84 @@ mod tests {
             .is_err());
     }
 
+    /// A ReadProperty Complex-ACK for `packed_object`, Present_Value, with `value`
+    /// (already application-tagged) between the opening and closing tags.
+    fn read_property_ack(packed_object: u32, value: &[u8]) -> Vec<u8> {
+        let mut body = vec![0x01, 0x00, 0x30, 0x01, SERVICE_READ_PROPERTY];
+        body.push(0x0C); // context tag 0, length 4: object identifier
+        body.extend_from_slice(&packed_object.to_be_bytes());
+        body.extend_from_slice(&[0x19, 85]); // context tag 1: Present_Value
+        body.push(0x3E); // opening tag 3
+        body.extend_from_slice(value);
+        body.push(0x3F); // closing tag 3
+        bvlc(0x0A, &body)
+    }
+
     #[test]
-    fn normalize_read_property_uses_object_point_id() {
+    fn normalize_read_property_ack_reports_the_real_value() {
+        // 21.5 as an application REAL: tag 0x44, then the big-endian IEEE 754 bits.
+        let mut real = vec![0x44];
+        real.extend_from_slice(&21.5f32.to_be_bytes());
+        let frame = BacnetParser::new()
+            .parse(&read_property_ack(0x0000_0001, &real))
+            .unwrap();
+        assert_eq!(frame.value, Some(BacnetValue::Real(21.5)));
+        let dp = BacnetNormalizer::new().normalize(&frame).unwrap();
+        assert_eq!(dp.source_protocol, SourceProtocol::Bacnet);
+        // Type 0 (analog input), instance 1.
+        assert_eq!(dp.point_id, "obj:0:1");
+        assert_eq!(dp.value, TupValue::Float(21.5));
+    }
+
+    #[test]
+    fn read_property_request_carries_no_value_to_report() {
         let frame = BacnetParser::new()
             .parse(&bvlc(0x0A, &read_property_body(0x0040_002A, 1)))
             .unwrap();
+        assert_eq!(frame.value, None);
+        assert!(BacnetNormalizer::new().normalize(&frame).is_err());
+    }
+
+    #[test]
+    fn application_values_decode_by_tag() {
+        // Unsigned 300: tag 0x22, two octets.
+        assert_eq!(
+            read_application_value(&[0x22, 0x01, 0x2C]),
+            Some((BacnetValue::Unsigned(300), 3))
+        );
+        // Signed -2: tag 0x31, one octet 0xFE.
+        assert_eq!(
+            read_application_value(&[0x31, 0xFE]),
+            Some((BacnetValue::Signed(-2), 2))
+        );
+        // Signed -300: tag 0x32, 0xFE 0xD4 (two's complement, two octets).
+        assert_eq!(
+            read_application_value(&[0x32, 0xFE, 0xD4]),
+            Some((BacnetValue::Signed(-300), 3))
+        );
+        // Boolean true keeps its value in the tag's length field.
+        assert_eq!(
+            read_application_value(&[0x11]),
+            Some((BacnetValue::Boolean(true), 1))
+        );
+        // Enumerated 3: tag 0x91.
+        assert_eq!(
+            read_application_value(&[0x91, 0x03]),
+            Some((BacnetValue::Enumerated(3), 2))
+        );
+        // A context-specific tag is not an application value.
+        assert_eq!(read_application_value(&[0x0C, 0, 0, 0, 1]), None);
+    }
+
+    #[test]
+    fn ack_without_a_decodable_value_is_an_error_not_a_zero() {
+        // A character string (tag 7, length 3: encoding octet 0x00, then "ok") is kept as bytes.
+        let frame = BacnetParser::new()
+            .parse(&read_property_ack(0x0000_0001, &[0x73, 0x00, b'o', b'k']))
+            .unwrap();
+        assert!(matches!(frame.value, Some(BacnetValue::Other(_))));
         let dp = BacnetNormalizer::new().normalize(&frame).unwrap();
-        assert_eq!(dp.source_protocol, SourceProtocol::Bacnet);
-        // Type 1 (binary output), instance 42.
-        assert_eq!(dp.point_id, "obj:1:42");
+        assert_eq!(dp.value, TupValue::Bytes(vec![0x00, b'o', b'k']));
     }
 
     #[test]
