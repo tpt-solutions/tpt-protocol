@@ -610,4 +610,28 @@ mod tests {
         // Binary input is not valid UTF-8 and must not be silently misread.
         assert!(decode_hex_file(&[0xff, 0x00, 0x12]).is_err());
     }
+
+    /// The bundled samples are real Modbus RTU frames with correct CRCs, so
+    /// each one must decode through the same path as `--replay`. `--replay`
+    /// parses requests, so the samples are Write Single Register requests from
+    /// slave 1: register 1 set to 0x0102, and register 2 set to 0x0064. The hex
+    /// format has no comments, so the frames are described here.
+    #[test]
+    fn bundled_replay_samples_decode() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/samples");
+        for (file, first_register) in [
+            ("modbus-write-single-register-1.hex", 0x0102),
+            ("modbus-write-single-register-2.hex", 0x0064),
+        ] {
+            let raw = std::fs::read(format!("{dir}/{file}")).unwrap();
+            let bytes = decode_hex_file(&raw).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let dp = plugins::replay_one("modbus", &bytes)
+                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            assert_eq!(
+                dp.value,
+                tpt_protocol_tup::TupValue::Int(first_register),
+                "{file}"
+            );
+        }
+    }
 }
