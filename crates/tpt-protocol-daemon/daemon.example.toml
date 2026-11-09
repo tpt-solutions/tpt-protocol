@@ -10,3 +10,15 @@ port = 9080
 # Bind address. Loopback only by default — the API has no authentication.
 # A non-loopback bind prints a warning.
 bind = "127.0.0.1"
+
+# Mapping rules, applied to every data point before the clients see it. The first
+# rule whose protocol/device/point match applies. See the daemon README.
+#
+# [[map]]
+# protocol = "modbus"
+# point = "modbus-point-1"
+# name = "tank_level"
+# unit = "m"
+# scale = 0.001
+# min = 0.0
+# max = 5.0

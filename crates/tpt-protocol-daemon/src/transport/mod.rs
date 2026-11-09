@@ -1,25 +1,45 @@
-//! Real transports: TCP (client or listener), UDP, serial and SocketCAN.
+//! Real transports and the code that runs them.
 //!
-//! Bytes are framed with the protocol's `try_parse` and normalized into TUP
-//! data points. A stream that fails to parse drops its buffer and resyncs.
-//! Frames that parse but carry no data (such as read requests) are skipped and
-//! counted. Serial ports need the `serial` cargo feature. SocketCAN needs the
-//! `socketcan` feature and Linux.
+//! A [`Transport`] yields [`ByteLink`]s: a connection to a device, an accepted
+//! peer, a datagram socket, a serial port, a CAN bus, or stdin. The generic
+//! [`supervise`] loop runs each link through the protocol's `try_parse` and
+//! normalizer, reconnects where needed, and sends the TUP points on a broadcast
+//! channel. Adding a transport means implementing these two traits; the framer
+//! and supervisor do not change.
+//!
+//! Stream links (TCP, serial, stdin) are split into frames by `try_parse`. A
+//! datagram link (UDP, CAN) is one unit per read, so each read is decoded on
+//! its own. A stream that fails to parse drops its buffer and resyncs. Frames
+//! that parse but carry no data (such as read requests) are skipped.
 
+mod can;
+mod net;
+mod serial;
+mod stdin;
+
+pub use can::can_message;
+
+use std::future::Future;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::net::{TcpListener, TcpStream, UdpSocket};
+use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::broadcast;
 use tpt_protocol_tup::DataPoint;
 
 use crate::plugins;
+use can::run_can;
+use net::{run_tcp_connect, run_tcp_listen, run_udp};
+use serial::run_serial;
+use stdin::run_stdin;
 
 /// How long a client waits before reconnecting.
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 /// Largest buffered-but-unframed byte count before the stream resyncs.
 const MAX_BUFFER: usize = 64 * 1024;
+/// Bytes requested per read from a stream.
+const READ_CHUNK: usize = 4096;
 
 /// Where the daemon gets its bytes.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +55,8 @@ pub enum Endpoint {
     /// Read a SocketCAN interface such as `can0` or `vcan0`. Needs the
     /// `socketcan` feature and Linux.
     Can { interface: String },
+    /// Read bytes piped into the daemon, such as `cat capture.bin | ...`.
+    Stdin,
 }
 
 impl Endpoint {
@@ -46,6 +68,7 @@ impl Endpoint {
         serial: Option<String>,
         baud: u32,
         can: Option<String>,
+        stdin: bool,
     ) -> Result<Option<Self>> {
         let chosen: Vec<Endpoint> = [
             tcp_connect.map(Endpoint::TcpConnect),
@@ -53,6 +76,7 @@ impl Endpoint {
             udp_bind.map(Endpoint::UdpBind),
             serial.map(|path| Endpoint::Serial { path, baud }),
             can.map(|interface| Endpoint::Can { interface }),
+            stdin.then_some(Endpoint::Stdin),
         ]
         .into_iter()
         .flatten()
@@ -61,9 +85,66 @@ impl Endpoint {
             0 => Ok(None),
             1 => Ok(chosen.into_iter().next()),
             _ => bail!(
-                "choose only one of --tcp-connect, --tcp-listen, --udp-bind, --serial and --can"
+                "choose only one of --tcp-connect, --tcp-listen, --udp-bind, --serial, --can and --stdin"
             ),
         }
+    }
+}
+
+/// How a link's bytes divide into messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Framing {
+    /// A byte stream. Frames may split across reads or share one.
+    Stream,
+    /// Each read is one whole message, such as a UDP datagram or a CAN frame.
+    Datagram,
+}
+
+/// A connected source of bytes.
+pub trait ByteLink: Send + 'static {
+    /// Whether reads are a stream or whole messages.
+    fn framing(&self) -> Framing;
+    /// The next chunk of bytes, or `Ok(None)` when the link has ended.
+    fn read_chunk(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>>> + Send;
+}
+
+/// A source of links.
+pub trait Transport: Send + 'static {
+    type Link: ByteLink;
+    /// True when accepted links run side by side. False when links run one at
+    /// a time, and the next one is only requested after the previous ends.
+    const CONCURRENT: bool;
+    /// A short description for the logs.
+    fn describe(&self) -> String;
+    /// The next link, or `Ok(None)` when no more links will come. An `Err`
+    /// is logged and retried after [`RECONNECT_DELAY`].
+    fn next_link(&mut self) -> impl Future<Output = Result<Option<Self::Link>>> + Send;
+}
+
+/// Adapts any async reader (a TCP stream, a serial port, stdin) to a stream link.
+pub struct ReaderLink<R> {
+    reader: R,
+}
+
+impl<R> ReaderLink<R> {
+    pub fn new(reader: R) -> Self {
+        Self { reader }
+    }
+}
+
+impl<R: AsyncRead + Unpin + Send + 'static> ByteLink for ReaderLink<R> {
+    fn framing(&self) -> Framing {
+        Framing::Stream
+    }
+
+    async fn read_chunk(&mut self) -> Result<Option<Vec<u8>>> {
+        let mut buf = vec![0u8; READ_CHUNK];
+        let n = self.reader.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.truncate(n);
+        Ok(Some(buf))
     }
 }
 
@@ -86,16 +167,18 @@ pub fn drain(protocol: &str, buf: &mut Vec<u8>, out: &mut Vec<DataPoint>) -> Res
     }
 }
 
-/// Reads from `reader` until it closes, sending each decoded point on `tx`.
-async fn pump<R: AsyncRead + Unpin>(
-    mut reader: R,
+/// Reads one link until it ends, sending each decoded point on `tx`.
+pub async fn pump<L: ByteLink>(
+    mut link: L,
     protocol: &str,
     tx: &broadcast::Sender<DataPoint>,
 ) -> Result<()> {
-    let mut buf = Vec::with_capacity(4096);
-    loop {
-        if reader.read_buf(&mut buf).await? == 0 {
-            return Ok(());
+    let framing = link.framing();
+    let mut buf: Vec<u8> = Vec::with_capacity(READ_CHUNK);
+    while let Some(chunk) = link.read_chunk().await? {
+        match framing {
+            Framing::Stream => buf.extend_from_slice(&chunk),
+            Framing::Datagram => buf = chunk,
         }
         let mut points = Vec::new();
         let result = drain(protocol, &mut buf, &mut points);
@@ -103,183 +186,66 @@ async fn pump<R: AsyncRead + Unpin>(
             let _ = tx.send(dp);
         }
         if let Err(e) = result {
-            eprintln!("{protocol}: {e}; discarding {} buffered bytes", buf.len());
+            tracing::warn!("{protocol}: {e}; discarding {} buffered bytes", buf.len());
+            buf.clear();
+        }
+        if framing == Framing::Datagram && !buf.is_empty() {
+            tracing::warn!(
+                "{protocol}: {} trailing bytes are not a complete frame",
+                buf.len()
+            );
             buf.clear();
         }
         if buf.len() > MAX_BUFFER {
-            eprintln!(
+            tracing::warn!(
                 "{protocol}: {} bytes without a complete frame; resyncing",
                 buf.len()
             );
             buf.clear();
         }
     }
+    Ok(())
 }
 
-/// Connects to `addr` and reads until the link drops, then reconnects forever.
-pub async fn run_tcp_connect(
-    addr: String,
+fn finish_link(result: Result<()>, protocol: &str) {
+    match result {
+        Ok(()) => tracing::info!("{protocol}: link closed"),
+        Err(e) => tracing::warn!("{protocol}: link failed: {e:#}"),
+    }
+}
+
+/// Runs a transport for the life of the daemon: opens links, reads them, and
+/// reopens them as the transport allows.
+pub async fn supervise<T: Transport>(
+    mut transport: T,
     protocol: String,
     tx: broadcast::Sender<DataPoint>,
 ) -> Result<()> {
     loop {
-        match TcpStream::connect(&addr).await {
-            Ok(stream) => {
-                eprintln!("{protocol}: connected to {addr}");
-                if let Err(e) = pump(stream, &protocol, &tx).await {
-                    eprintln!("{protocol}: read from {addr} failed: {e}");
+        match transport.next_link().await {
+            Ok(Some(link)) => {
+                tracing::info!("{protocol}: link opened ({})", transport.describe());
+                if T::CONCURRENT {
+                    let (protocol, tx) = (protocol.clone(), tx.clone());
+                    tokio::spawn(async move {
+                        finish_link(pump(link, &protocol, &tx).await, &protocol);
+                    });
+                } else {
+                    finish_link(pump(link, &protocol, &tx).await, &protocol);
+                    tokio::time::sleep(RECONNECT_DELAY).await;
                 }
-                eprintln!("{protocol}: link to {addr} closed");
             }
-            Err(e) => eprintln!("{protocol}: connect to {addr} failed: {e}"),
-        }
-        tokio::time::sleep(RECONNECT_DELAY).await;
-    }
-}
-
-/// Accepts connections on `listener`, reading each one in its own task.
-pub async fn run_tcp_listen(
-    listener: TcpListener,
-    protocol: String,
-    tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    loop {
-        let (stream, peer) = listener.accept().await?;
-        eprintln!("{protocol}: accepted {peer}");
-        let protocol = protocol.clone();
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            if let Err(e) = pump(stream, &protocol, &tx).await {
-                eprintln!("{protocol}: {peer}: {e}");
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                tracing::warn!("{protocol}: {e:#}");
+                tokio::time::sleep(RECONNECT_DELAY).await;
             }
-            eprintln!("{protocol}: {peer} disconnected");
-        });
-    }
-}
-
-/// Receives datagrams on `socket`. Each datagram is decoded on its own, so a
-/// frame split across datagrams is an error.
-pub async fn run_udp(
-    socket: UdpSocket,
-    protocol: String,
-    tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    let mut datagram = vec![0u8; 65_535];
-    loop {
-        let (n, peer) = socket.recv_from(&mut datagram).await?;
-        let mut buf = datagram[..n].to_vec();
-        let mut points = Vec::new();
-        if let Err(e) = drain(&protocol, &mut buf, &mut points) {
-            eprintln!("{protocol}: {peer}: {e}");
-        }
-        if !buf.is_empty() {
-            eprintln!(
-                "{protocol}: {peer}: {} trailing bytes are not a complete frame",
-                buf.len()
-            );
-        }
-        for dp in points {
-            let _ = tx.send(dp);
         }
     }
 }
 
-/// Opens a serial port and reads it, reopening whenever it fails or closes.
-#[cfg(feature = "serial")]
-pub async fn run_serial(
-    path: String,
-    baud: u32,
-    protocol: String,
-    tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    use tokio_serial::SerialPortBuilderExt;
-    loop {
-        match tokio_serial::new(&path, baud).open_native_async() {
-            Ok(port) => {
-                eprintln!("{protocol}: opened {path} at {baud} baud");
-                if let Err(e) = pump(port, &protocol, &tx).await {
-                    eprintln!("{protocol}: reading {path} failed: {e}");
-                }
-                eprintln!("{protocol}: {path} closed");
-            }
-            Err(e) => eprintln!("{protocol}: open {path} failed: {e}"),
-        }
-        tokio::time::sleep(RECONNECT_DELAY).await;
-    }
-}
-
-/// Without the `serial` feature there is no port driver, so serial endpoints fail.
-#[cfg(not(feature = "serial"))]
-pub async fn run_serial(
-    _path: String,
-    _baud: u32,
-    _protocol: String,
-    _tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    bail!("serial ports need the daemon to be built with the `serial` feature")
-}
-
-/// Wraps one CAN frame in the framing that a CAN protocol's parser expects.
-/// Returns `None` for protocols that are not carried on CAN.
-#[cfg_attr(not(all(feature = "socketcan", target_os = "linux")), allow(dead_code))]
-pub fn can_message(protocol: &str, raw_id: u32, data: &[u8]) -> Option<Vec<u8>> {
-    let header = match protocol {
-        // CANopen: the 11-bit COB-ID, big-endian.
-        "canopen" => (raw_id as u16 & 0x07FF).to_be_bytes().to_vec(),
-        // J1939 and ISOBUS: the 29-bit identifier, big-endian.
-        "j1939" | "isobus" => raw_id.to_be_bytes().to_vec(),
-        _ => return None,
-    };
-    let mut out = header;
-    out.extend_from_slice(data);
-    Some(out)
-}
-
-/// Reads CAN frames from a SocketCAN interface, one frame per message.
-#[cfg(all(feature = "socketcan", target_os = "linux"))]
-pub async fn run_can(
-    interface: String,
-    protocol: String,
-    tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    use socketcan::tokio::CanSocket;
-    use socketcan::{EmbeddedFrame, Id};
-
-    if can_message(&protocol, 0, &[]).is_none() {
-        bail!("{protocol} is not carried on CAN");
-    }
-    let socket = CanSocket::open(&interface)?;
-    eprintln!("{protocol}: reading CAN interface {interface}");
-    loop {
-        let frame = socket.read_frame().await?;
-        let raw_id = match frame.id() {
-            Id::Standard(id) => id.as_raw() as u32,
-            Id::Extended(id) => id.as_raw(),
-        };
-        let Some(mut buf) = can_message(&protocol, raw_id, frame.data()) else {
-            continue;
-        };
-        let mut points = Vec::new();
-        if let Err(e) = drain(&protocol, &mut buf, &mut points) {
-            eprintln!("{protocol}: {interface}: {e}");
-        }
-        for dp in points {
-            let _ = tx.send(dp);
-        }
-    }
-}
-
-/// Without SocketCAN support the endpoint fails with an explanation.
-#[cfg(not(all(feature = "socketcan", target_os = "linux")))]
-pub async fn run_can(
-    _interface: String,
-    _protocol: String,
-    _tx: broadcast::Sender<DataPoint>,
-) -> Result<()> {
-    bail!("SocketCAN needs Linux and the daemon built with the `socketcan` feature")
-}
-
-/// Binds the endpoint and runs it until it fails.
+/// Binds the endpoint and runs it until it is finished (a stdin or UDP source
+/// ends; network and serial sources run for the life of the daemon).
 pub async fn run(
     endpoint: Endpoint,
     protocol: String,
@@ -293,13 +259,16 @@ pub async fn run(
         Endpoint::UdpBind(addr) => run_udp(UdpSocket::bind(&addr).await?, protocol, tx).await,
         Endpoint::Serial { path, baud } => run_serial(path, baud, protocol, tx).await,
         Endpoint::Can { interface } => run_can(interface, protocol, tx).await,
+        Endpoint::Stdin => run_stdin(protocol, tx).await,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use tokio::io::AsyncWriteExt;
+    use tokio::net::{TcpListener, TcpStream, UdpSocket};
     use tpt_protocol_tup::TupValue;
 
     /// Modbus TCP: Write Single Register (unit 1, address 1, value 10).
@@ -356,25 +325,36 @@ mod tests {
     #[test]
     fn endpoint_rejects_more_than_one_choice() {
         assert!(matches!(
-            Endpoint::from_flags(None, None, None, None, 9600, None),
+            Endpoint::from_flags(None, None, None, None, 9600, None, false),
             Ok(None)
         ));
-        assert!(
-            Endpoint::from_flags(Some("a".into()), Some("b".into()), None, None, 9600, None)
-                .is_err()
-        );
+        assert!(Endpoint::from_flags(
+            Some("a".into()),
+            Some("b".into()),
+            None,
+            None,
+            9600,
+            None,
+            false
+        )
+        .is_err());
         assert!(matches!(
-            Endpoint::from_flags(None, None, None, Some("/dev/ttyUSB0".into()), 9600, None),
+            Endpoint::from_flags(None, None, None, Some("/dev/ttyUSB0".into()), 9600, None, false),
             Ok(Some(Endpoint::Serial { ref path, baud: 9600 })) if path == "/dev/ttyUSB0"
         ));
         assert!(matches!(
-            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into()), None, 9600, None),
+            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into()), None, 9600, None, false),
             Ok(Some(Endpoint::UdpBind(ref a))) if a == "0.0.0.0:502"
+        ));
+        assert!(matches!(
+            Endpoint::from_flags(None, None, None, None, 9600, None, true),
+            Ok(Some(Endpoint::Stdin))
         ));
     }
 
     #[test]
     fn can_message_frames_each_protocol_as_its_parser_expects() {
+        use self::can::can_message;
         // CANopen: TPDO1 (0x181), COB-ID big-endian, then the payload.
         assert_eq!(
             can_message("canopen", 0x181, &[0x01, 0x02]),
@@ -392,19 +372,81 @@ mod tests {
     #[test]
     fn can_endpoint_is_part_of_the_flag_choice() {
         assert!(matches!(
-            Endpoint::from_flags(None, None, None, None, 9600, Some("vcan0".into())),
+            Endpoint::from_flags(None, None, None, None, 9600, Some("vcan0".into()), false),
             Ok(Some(Endpoint::Can { ref interface })) if interface == "vcan0"
         ));
-        assert!(Endpoint::from_flags(None, None, None, None, 9600, Some("vcan0".into())).is_ok());
         assert!(Endpoint::from_flags(
             Some("a".into()),
             None,
             None,
             None,
             9600,
-            Some("vcan0".into())
+            Some("vcan0".into()),
+            false
         )
         .is_err());
+    }
+
+    /// A transport that hands out a fixed script of results, one per call.
+    struct Scripted(VecDeque<Result<Option<ReaderLink<&'static [u8]>>>>);
+
+    impl Transport for Scripted {
+        type Link = ReaderLink<&'static [u8]>;
+        const CONCURRENT: bool = false;
+        fn describe(&self) -> String {
+            "scripted".into()
+        }
+        async fn next_link(&mut self) -> Result<Option<Self::Link>> {
+            self.0.pop_front().unwrap_or(Ok(None))
+        }
+    }
+
+    #[tokio::test]
+    async fn supervisor_retries_a_failed_link_then_stops_at_none() {
+        static FRAME: &[u8] = &WRITE_REGISTER;
+        let (tx, mut rx) = broadcast::channel(16);
+        let transport = Scripted(VecDeque::from(vec![
+            Err(anyhow::anyhow!("device not ready")),
+            Ok(Some(ReaderLink::new(FRAME))),
+            Ok(None),
+        ]));
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            supervise(transport, "modbus".into(), tx),
+        )
+        .await
+        .expect("supervisor returns once the script ends")
+        .unwrap();
+        let dp = rx.try_recv().expect("the scripted link delivered a point");
+        assert_eq!(dp.value, TupValue::Int(10));
+    }
+
+    /// A datagram link: each item is one read.
+    struct Datagrams(VecDeque<Vec<u8>>);
+
+    impl ByteLink for Datagrams {
+        fn framing(&self) -> Framing {
+            Framing::Datagram
+        }
+        async fn read_chunk(&mut self) -> Result<Option<Vec<u8>>> {
+            Ok(self.0.pop_front())
+        }
+    }
+
+    #[tokio::test]
+    async fn datagram_links_decode_each_read_on_its_own() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let link = Datagrams(VecDeque::from(vec![
+            WRITE_REGISTER.to_vec(),
+            // A frame cut short by the datagram boundary is discarded, not
+            // joined to the next datagram.
+            WRITE_REGISTER[..7].to_vec(),
+            WRITE_REGISTER_2.to_vec(),
+        ]));
+        pump(link, "modbus", &tx).await.unwrap();
+        assert_eq!(rx.try_recv().unwrap().value, TupValue::Int(10));
+        assert_eq!(rx.try_recv().unwrap().value, TupValue::Int(20));
+        assert!(rx.try_recv().is_err());
     }
 
     /// Runs against a SocketCAN interface. Create it with

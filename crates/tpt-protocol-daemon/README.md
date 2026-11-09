@@ -42,18 +42,67 @@ cargo run --bin tpt-protocol-daemon -- --port 9090 --simulate modbus
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay capture.bin --replay-format raw
 
-# The samples/ directory holds two Modbus RTU frames to try this with, e.g.
-# cargo run --bin tpt-protocol-daemon -- --simulate modbus --replay samples/modbus-write-single-register-1.hex
-# Their CRCs are checked by the bundled_replay_samples_decode test.
+# A candump -L capture of CAN frames, decoded frame by frame through a CAN protocol
+cargo run --bin tpt-protocol-daemon -- --simulate canopen --replay can.log --replay-format candump
+
+# Every bundled sample under samples/ replays to a data point (the test checks this)
+cargo run --bin tpt-protocol-daemon -- --simulate modbus --replay samples/modbus-write-single-register-1.hex
+
+# Which protocol is this capture? Rank all of them by how much they decode
+cargo run --bin tpt-protocol-daemon -- --detect capture.bin --replay-format raw
+
+# Read bytes piped in, record every data point as NDJSON, and simulate every 200 ms
+cat capture.bin | cargo run --bin tpt-protocol-daemon -- --stdin --simulate modbus --replay-format raw --record out.ndjson
+cargo run --bin tpt-protocol-daemon -- --simulate modbus --interval 200
 
 # Require a token (as ?token= or Authorization: Bearer) and allow a dev-server origin
 cargo run --bin tpt-protocol-daemon -- --simulate modbus --token "$TOKEN" --allow-origin http://localhost:5173
 
-# Run with TOML config
+# Run with TOML config (it can also hold [[map]] rules)
 cargo run --bin tpt-protocol-daemon -- --config daemon.example.toml
+
+# Health check: active clients, messages sent, lagged events, rejected handshakes
+curl http://127.0.0.1:9080/healthz
 ```
 
-Ctrl-C stops the daemon.
+Ctrl-C stops the daemon. Logs go to stderr; set `RUST_LOG=debug` for more
+detail (the default level is `info`).
+
+The `samples/` directory holds one replayable frame per protocol: `.hex` files
+for binary frames and `.raw` files for text protocols (NMEA, OCPP, HL7 v2 and
+IEEE 11073 SDC, which replay with `--replay-format raw`). The
+`every_bundled_sample_replays_to_a_data_point` test replays each one.
+
+### Mapping rules (`[[map]]`)
+
+A TOML rule renames points, sets units, scales values, and checks a range. It
+applies to the points that match its `protocol`, `device` and `point` fields
+(each optional). The first matching rule applies, and points that match none
+pass through unchanged.
+
+```toml
+[[map]]
+protocol = "modbus"
+point = "modbus-point-1"
+name = "tank_level"   # the new point id
+unit = "m"
+scale = 0.001        # value = raw * scale + offset
+min = 0.0            # outside [min, max] the quality becomes "uncertain"
+max = 5.0
+```
+
+Unknown keys, a `min` above `max`, and an unknown protocol name are config
+errors, reported at startup. The stage runs between the devices and the
+clients, so the WebSocket API and `--record` both see mapped points.
+
+### Recording and detection
+
+- `--record FILE` appends every data point to `FILE` as NDJSON, one object per
+  line. Each line is the JSON the WebSocket sends, so `jq` and any JSON-lines
+  reader can read it.
+- `--detect FILE` runs every protocol's framer over a capture and prints its
+  frames, points and errors, best first. It is a heuristic: a framer without a
+  length field (UDS) can accept almost any byte, so read the counts, not only the order.
 
 ## Architecture
 
@@ -111,25 +160,41 @@ The 19 supported protocols (dispatched by the lowercase name shown):
 | `matter-thread` | `tpt-protocol-matter-thread` |
 | `coap` | `tpt-protocol-coap` |
 
-### Transports
+### Transports (`src/transport/`)
 
-The daemon's `transport` module reads bytes from one endpoint, chosen with one
-of three flags:
+One endpoint supplies the bytes, chosen with one of these flags:
 
 - `--tcp-connect HOST:PORT`: connects to a device and reconnects when the link drops.
 - `--tcp-listen ADDR:PORT`: accepts devices, one task per connection.
-- `--udp-bind ADDR:PORT`: receives datagrams. Each datagram must hold whole frames.
+- `--udp-bind ADDR:PORT`: receives datagrams. Each datagram is one message.
 - `--serial PATH --baud N`: reads a serial port, reopening it when it disappears.
   Build with `--features serial`. Without the feature the flag fails with a clear error.
 - `--can IFACE`: reads a SocketCAN interface such as `can0` or `vcan0`. CANopen
   takes the 11-bit COB-ID and J1939/ISOBUS take the 29-bit identifier. Build with
   `--features socketcan` on Linux. Other platforms fail with a clear error.
+- `--stdin`: reads bytes piped into the daemon. It needs no hardware, which makes
+  it the simplest way to feed a capture through the live pipeline.
+
+Every transport implements two small traits in `transport/mod.rs`. `Transport`
+yields links (a connection, an accepted peer, a socket, a port), and `ByteLink`
+yields the bytes of one link as a stream or as whole messages. The generic
+`supervise` loop frames each link with the protocol's `try_parse`, normalizes
+the frames, reconnects where the transport allows, and logs each step. Adding a
+transport means implementing the two traits; the framer and the supervisor stay
+the same. `supervisor_retries_a_failed_link_then_stops_at_none` and
+`datagram_links_decode_each_read_on_its_own` test that path without any network.
 
 A stream that fails to parse discards its buffer and resyncs. Frames that parse
 but carry no data (such as Modbus read requests) are skipped. The
 `ProtocolPlugin` trait still exposes only `simulate()`. The transport runs
 beside the plugin, and the plugin is not used when an endpoint is set.
 Without a flag the daemon simulates, and `--replay` reads bytes from a file.
+
+### Simulation
+
+Without a transport the daemon simulates one protocol. `--interval MS` sets the
+time between points (1 to 3600000 ms, default 1000). The points rotate through
+the four qualities, so every colour in the TUI shows.
 
 ### Local API (WebSocket)
 
@@ -198,8 +263,16 @@ stream and print each data point. The daemon's default simulate target is
 
 - **Simulation without a transport flag.** Without a transport flag the daemon
   simulates data. The `ProtocolPlugin` trait has a `simulate()` method but no
-  real-I/O method, so the transports live beside it in `transport.rs`. None of
-  them has run against real hardware.
+  real-I/O method, so the transports live beside it in `transport/`. Serial and
+  SocketCAN have not run against real hardware.
+- **Protocols are feature-gated, not runtime-gated.** Each protocol is a Cargo
+  feature (on by default). A build without a protocol feature does not compile.
+- **Mapping is point-by-point.** `[[map]]` rules cannot compute across points,
+  such as sums or derived quantities. They also cannot match on a value.
+- **Capture import is CAN-only.** `--replay-format candump` reads CAN captures.
+  pcap and pcapng are not read, and neither is any other network capture.
+- **Sinks are limited to the WebSocket and NDJSON files.** There is no MQTT,
+  OPC UA server, InfluxDB or OpenTelemetry output.
 - **No authentication.** The WebSocket API is unauthenticated and loopback by
   default; do not expose it on an untrusted network.
 - **MAVLink `CRC_EXTRA`** validation gap lives in the `tpt-protocol-mavlink`
@@ -214,9 +287,20 @@ crates/tpt-protocol-daemon/
 ├── CHANGELOG.md
 ├── daemon.example.toml        # Example TOML config
 ├── src/
-│   ├── main.rs                # CLI, WebSocket server, simulation loop
-│   └── plugins/
-│       └── mod.rs             # ProtocolPlugin impls for all 19 protocols
+│   ├── main.rs                # CLI, WebSocket server, health check, replay
+│   ├── capture.rs             # candump -L reader
+│   ├── detect.rs              # protocol auto-detection (--detect)
+│   ├── mapping.rs             # [[map]] rules and the mapping stage
+│   ├── record.rs              # NDJSON recorder (--record)
+│   ├── plugins/
+│   │   └── mod.rs             # ProtocolPlugin impls, one feature per protocol
+│   └── transport/
+│       ├── mod.rs             # Transport and ByteLink traits, framer, supervisor
+│       ├── net.rs             # TCP connect/listen and UDP
+│       ├── serial.rs          # serial ports (feature `serial`)
+│       ├── can.rs             # SocketCAN (feature `socketcan`, Linux)
+│       └── stdin.rs           # --stdin
+├── samples/                   # one replayable frame per protocol
 └── examples/
     ├── client.py              # Python WebSocket consumer
     └── client.js              # Node WebSocket consumer
@@ -229,7 +313,9 @@ crates/tpt-protocol-daemon/
   traits and the `Error` type the daemon relies on.
 - `tpt-protocol-tup` — the TUP envelope (`DataPoint`, `TupValue`, `Quality`,
   `SourceProtocol`) streamed over the WebSocket API.
-- The 19 protocol crates wired in via `src/plugins/mod.rs`.
+- The 19 protocol crates, each with a simulated plugin in `src/plugins/mod.rs`.
+  The simulation does not run the parser; decoding real bytes goes through
+  the transports.
 - `tpt-protocol-cli` — the `ratatui` TUI that connects to this daemon's
   WebSocket API.
 

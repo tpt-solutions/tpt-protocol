@@ -1,16 +1,21 @@
+mod capture;
+mod detect;
+mod mapping;
 mod plugins;
+mod record;
 mod transport;
 
-use std::net::IpAddr;
-use std::pin::Pin;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use clap::Parser;
-use futures_util::stream::{Stream, StreamExt};
+use futures_util::stream::StreamExt;
 use futures_util::SinkExt;
 use serde::Deserialize;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, OwnedSemaphorePermit, Semaphore};
 use tokio_tungstenite::accept_hdr_async_with_config;
@@ -18,6 +23,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, 
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
+use tracing_subscriber::EnvFilter;
 
 use tpt_protocol_tup::{json, DataPoint};
 
@@ -58,9 +64,16 @@ struct Args {
     /// instead of running the synthetic simulation.
     #[arg(long)]
     replay: Option<String>,
-    /// How `--replay` interprets the file: `hex` (ASCII hex text) or `raw` (binary).
-    #[arg(long, default_value = "hex", value_parser = ["hex", "raw"])]
+    /// How `--replay` interprets the file: `hex` (ASCII hex text), `raw` (binary),
+    /// or `candump` (a `candump -L` CAN capture, decoded frame by frame).
+    #[arg(long, default_value = "hex", value_parser = ["hex", "raw", "candump"])]
     replay_format: String,
+    /// Rank the protocols by how well they decode a capture (hex or raw) and exit.
+    #[arg(long)]
+    detect: Option<String>,
+    /// Append every data point to this file as NDJSON, one JSON object per line.
+    #[arg(long)]
+    record: Option<std::path::PathBuf>,
     /// Require this token on WebSocket connections, as `?token=` or `Authorization: Bearer`.
     #[arg(long)]
     token: Option<String>,
@@ -85,6 +98,12 @@ struct Args {
     /// Read a SocketCAN interface, such as can0 or vcan0 (Linux; needs the `socketcan` feature).
     #[arg(long = "can")]
     can: Option<String>,
+    /// Read bytes from standard input, e.g. `cat capture.bin | tpt-protocol-daemon --stdin ...`.
+    #[arg(long = "stdin")]
+    stdin: bool,
+    /// Milliseconds between simulated points (1 to 3600000). Ignored with a transport.
+    #[arg(long = "interval", default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..=3_600_000))]
+    interval: u64,
 }
 
 #[derive(Deserialize, Default)]
@@ -93,6 +112,9 @@ struct Config {
     simulate: Option<String>,
     port: Option<u16>,
     bind: Option<String>,
+    /// Declarative mapping rules: see `mapping.rs`.
+    #[serde(default)]
+    map: Vec<mapping::MapRule>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -125,6 +147,34 @@ struct WsPolicy {
     allowed_origins: Vec<String>,
     /// Only enforced when bound to loopback: DNS-rebinding defence.
     check_host: bool,
+}
+
+/// State shared by every connection: the access policy, the data channel, the
+/// connection slots and the counters that `/healthz` reports.
+struct ServerState {
+    policy: WsPolicy,
+    tx: broadcast::Sender<DataPoint>,
+    slots: Arc<Semaphore>,
+    started: Instant,
+    messages_sent: AtomicU64,
+    lagged_events: AtomicU64,
+    dropped_messages: AtomicU64,
+    rejected_handshakes: AtomicU64,
+}
+
+impl ServerState {
+    fn new(policy: WsPolicy, tx: broadcast::Sender<DataPoint>) -> Self {
+        Self {
+            policy,
+            tx,
+            slots: Arc::new(Semaphore::new(MAX_CLIENTS)),
+            started: Instant::now(),
+            messages_sent: AtomicU64::new(0),
+            lagged_events: AtomicU64::new(0),
+            dropped_messages: AtomicU64::new(0),
+            rejected_handshakes: AtomicU64::new(0),
+        }
+    }
 }
 
 fn normalize_origin(origin: &str) -> String {
@@ -225,7 +275,7 @@ fn on_handshake(
     match authorize(req, policy) {
         Ok(()) => Ok(resp),
         Err((status, reason)) => {
-            eprintln!("rejected WebSocket handshake ({status}): {reason}");
+            tracing::warn!("rejected WebSocket handshake ({status}): {reason}");
             let mut rejection = ErrorResponse::new(Some(reason.to_string()));
             *rejection.status_mut() = status;
             Err(rejection)
@@ -250,14 +300,116 @@ fn decode_hex_file(raw: &[u8]) -> Result<Vec<u8>> {
     })
 }
 
+/// Turns the bytes of a `--replay` file into the frame bytes to parse.
+fn replay_bytes(format: &str, raw: Vec<u8>) -> Result<Vec<u8>> {
+    match format {
+        "hex" => decode_hex_file(&raw),
+        "raw" => Ok(raw),
+        other => bail!("unknown --replay-format '{other}' (expected hex or raw)"),
+    }
+}
+
+/// Decodes a `candump -L` capture with the CAN protocol `protocol`. Each frame is
+/// framed the way the live CAN transport frames it, and each point takes the
+/// frame's time from the capture.
+fn replay_candump(protocol: &str, raw: &[u8]) -> Result<Vec<tpt_protocol_tup::DataPoint>> {
+    if transport::can_message(protocol, 0, &[]).is_none() {
+        bail!(
+            "{protocol} is not carried on CAN, so a candump capture cannot be replayed through it"
+        );
+    }
+    let text = std::str::from_utf8(raw).map_err(|_| anyhow!("a candump file is text"))?;
+    let records = capture::parse_candump(text).map_err(|e| anyhow!("candump: {e}"))?;
+    let mut out = Vec::new();
+    for record in records {
+        let Some(mut message) = transport::can_message(protocol, record.id, &record.data) else {
+            continue;
+        };
+        let mut points = Vec::new();
+        // A frame the parser rejects is reported and skipped; the rest of the capture
+        // still replays. Points decoded before the error are kept.
+        if let Err(e) = transport::drain(protocol, &mut message, &mut points) {
+            tracing::warn!("candump: {protocol} frame {:#X} skipped: {e}", record.id);
+        }
+        for mut dp in points {
+            // The capture's own time is the time of the frame, so it replaces the
+            // ingest time that `decode_one` stamped.
+            dp.timestamp = record.timestamp_ms;
+            out.push(dp);
+        }
+    }
+    Ok(out)
+}
+
+/// Waits for the request line (peeking, so the WebSocket handshake still sees it)
+/// and reports whether it is `GET /healthz`.
+async fn request_is_healthz(stream: &TcpStream) -> bool {
+    let mut buf = [0u8; 256];
+    let peeked = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
+        loop {
+            let n = stream.peek(&mut buf).await?;
+            if n == 0 || n == buf.len() || buf[..n].contains(&b'\n') {
+                return Ok::<usize, std::io::Error>(n);
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    matches!(peeked, Ok(Ok(n)) if buf[..n].starts_with(b"GET /healthz "))
+}
+
+/// Counters for operators. No data points, no device names: only totals.
+fn healthz_body(state: &ServerState) -> String {
+    serde_json::json!({
+        "status": "ok",
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptime_secs": state.started.elapsed().as_secs(),
+        "clients": {
+            "active": MAX_CLIENTS - state.slots.available_permits(),
+            "max": MAX_CLIENTS,
+        },
+        "messages_sent": state.messages_sent.load(Ordering::Relaxed),
+        "lagged_events": state.lagged_events.load(Ordering::Relaxed),
+        "dropped_messages": state.dropped_messages.load(Ordering::Relaxed),
+        "rejected_handshakes": state.rejected_handshakes.load(Ordering::Relaxed),
+    })
+    .to_string()
+}
+
+async fn write_healthz(stream: &mut TcpStream, state: &ServerState) -> std::io::Result<()> {
+    // Read the request so that closing the socket does not reset the response.
+    let mut scratch = [0u8; 4096];
+    let _ = stream.read(&mut scratch).await?;
+    let body = healthz_body(state);
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await
+}
+
 async fn handle_connection(
-    stream: TcpStream,
-    tx: broadcast::Sender<DataPoint>,
-    policy: Arc<WsPolicy>,
+    mut stream: TcpStream,
+    peer: SocketAddr,
+    state: Arc<ServerState>,
     _permit: OwnedSemaphorePermit,
 ) {
+    if request_is_healthz(&stream).await {
+        if let Err(e) = write_healthz(&mut stream, &state).await {
+            tracing::debug!("health check to {peer} failed: {e}");
+        }
+        return;
+    }
+
+    let cb_state = Arc::clone(&state);
     #[allow(clippy::result_large_err)] // same tungstenite-imposed type as `on_handshake`
-    let callback = move |req: &Request, resp: Response| on_handshake(req, resp, &policy);
+    let callback = move |req: &Request, resp: Response| {
+        on_handshake(req, resp, &cb_state.policy).inspect_err(|_| {
+            cb_state.rejected_handshakes.fetch_add(1, Ordering::Relaxed);
+        })
+    };
 
     let config = WebSocketConfig {
         max_message_size: Some(MAX_INCOMING_MESSAGE),
@@ -273,17 +425,17 @@ async fn handle_connection(
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
-            eprintln!("WebSocket handshake error: {e}");
+            tracing::warn!("WebSocket handshake error: {e}");
             return;
         }
         Err(_) => {
-            eprintln!("WebSocket handshake timed out");
+            tracing::warn!("WebSocket handshake timed out");
             return;
         }
     };
 
     let (mut write, mut read) = ws_stream.split();
-    let mut rx = tx.subscribe();
+    let mut rx = state.tx.subscribe();
 
     loop {
         tokio::select! {
@@ -297,7 +449,7 @@ async fn handle_connection(
                 Some(Ok(Message::Close(_))) | None => break,
                 Some(Ok(_)) => {}
                 Some(Err(e)) => {
-                    eprintln!("WebSocket read error: {e}");
+                    tracing::warn!("WebSocket read error: {e}");
                     break;
                 }
             },
@@ -306,15 +458,18 @@ async fn handle_connection(
                     let json = match json::to_json_string(&dp) {
                         Ok(j) => j,
                         Err(e) => {
-                            eprintln!("JSON serialization error: {e}");
+                            tracing::warn!("JSON serialization error: {e}");
                             continue;
                         }
                     };
                     if write.send(Message::Text(format!("[{json}]"))).await.is_err() {
                         break;
                     }
+                    state.messages_sent.fetch_add(1, Ordering::Relaxed);
                 }
                 Err(broadcast::error::RecvError::Lagged(dropped)) => {
+                    state.lagged_events.fetch_add(1, Ordering::Relaxed);
+                    state.dropped_messages.fetch_add(dropped, Ordering::Relaxed);
                     // Tell the client its stream has a gap. This is a JSON object,
                     // not an array, so clients must check for `"type":"lagged"`.
                     let notice = format!(r#"{{"type":"lagged","dropped":{dropped}}}"#);
@@ -328,37 +483,30 @@ async fn handle_connection(
     }
 }
 
-async fn ws_server(
-    bind: &str,
-    port: u16,
-    tx: broadcast::Sender<DataPoint>,
-    policy: Arc<WsPolicy>,
-) -> Result<()> {
-    let listener = TcpListener::bind((bind, port)).await?;
-    let slots = Arc::new(Semaphore::new(MAX_CLIENTS));
-
+async fn ws_server(listener: TcpListener, state: Arc<ServerState>) -> Result<()> {
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(e) => {
-                eprintln!("accept error: {e}");
+                tracing::warn!("accept error: {e}");
                 tokio::time::sleep(ACCEPT_BACKOFF).await;
                 continue;
             }
         };
 
-        let permit = match Arc::clone(&slots).try_acquire_owned() {
+        // Every connection, including a health check, takes a slot. That bounds
+        // the number of tasks a flood of connections can create.
+        let permit = match Arc::clone(&state.slots).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => {
-                eprintln!("rejecting {peer}: connection limit ({MAX_CLIENTS}) reached");
+                tracing::warn!("rejecting {peer}: connection limit ({MAX_CLIENTS}) reached");
                 continue;
             }
         };
 
-        let tx = tx.clone();
-        let policy = Arc::clone(&policy);
+        let state = Arc::clone(&state);
         tokio::spawn(async move {
-            handle_connection(stream, tx, policy, permit).await;
+            handle_connection(stream, peer, state, permit).await;
         });
     }
 }
@@ -375,11 +523,42 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Diagnostics go to stderr. Set RUST_LOG (e.g. `RUST_LOG=debug`) to change the level.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        // Colour only when a person is watching; redirected logs stay plain text.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .init();
+
     let file_config = match &args.config {
         Some(path) => toml::from_str::<Config>(&tokio::fs::read_to_string(path).await?)?,
         None => Config::default(),
     };
+    for rule in &file_config.map {
+        rule.validate()
+            .map_err(|e| anyhow!("config [[map]]: {e}"))?;
+    }
+    let map_rules = file_config.map.clone();
     let settings = resolve_settings(args.simulate, args.port, args.bind, file_config);
+
+    if let Some(ref detect_path) = args.detect {
+        let raw = tokio::fs::read(detect_path).await?;
+        let bytes = replay_bytes(&args.replay_format, raw)?;
+        println!(
+            "{:<16} {:>8} {:>8} {:>7}",
+            "protocol", "frames", "points", "errors"
+        );
+        for score in detect::rank(&bytes) {
+            println!(
+                "{:<16} {:>8} {:>8} {:>7}",
+                score.protocol, score.frames, score.points, score.errors
+            );
+        }
+        return Ok(());
+    }
 
     if let Some(ref replay_path) = args.replay {
         let protocol = settings.simulate.as_deref().ok_or_else(|| {
@@ -388,25 +567,28 @@ async fn main() -> Result<()> {
             )
         })?;
         let raw = tokio::fs::read(replay_path).await?;
-        let bytes = match args.replay_format.as_str() {
-            "hex" => decode_hex_file(&raw)?,
-            "raw" => raw,
-            other => bail!("unknown --replay-format '{other}' (expected hex or raw)"),
-        };
-        let dp = plugins::replay_one(protocol, &bytes)
-            .map_err(|e| anyhow!("replay parse failed: {e}"))?;
-        println!("{}", json::to_json_string(&dp)?);
+        if args.replay_format == "candump" {
+            for dp in replay_candump(protocol, &raw)? {
+                println!("{}", json::to_json_string(&dp)?);
+            }
+        } else {
+            let bytes = replay_bytes(&args.replay_format, raw)?;
+            let dp = plugins::replay_one(protocol, &bytes)
+                .map_err(|e| anyhow!("replay parse failed: {e}"))?;
+            println!("{}", json::to_json_string(&dp)?);
+        }
         return Ok(());
     }
 
     let protocol = match settings.simulate.clone() {
         Some(p) => p,
         None => {
-            eprintln!("no --simulate given; defaulting to modbus");
+            tracing::warn!("no --simulate given; defaulting to modbus");
             "modbus".to_string()
         }
     };
-    let plugin = plugins::build_plugin(&protocol).map_err(|e| anyhow!("{e}"))?;
+    // Validates the protocol name before any socket is opened.
+    plugins::build_plugin(&protocol).map_err(|e| anyhow!("{e}"))?;
     let transport_endpoint = transport::Endpoint::from_flags(
         args.tcp_connect.clone(),
         args.tcp_listen.clone(),
@@ -414,6 +596,7 @@ async fn main() -> Result<()> {
         args.serial.clone(),
         args.baud,
         args.can.clone(),
+        args.stdin,
     )?;
 
     if let Some(ref token) = args.token {
@@ -425,61 +608,93 @@ async fn main() -> Result<()> {
     let bind = settings.bind;
     let port = settings.port;
     let loopback = is_loopback_bind(&bind);
+    let interval = Duration::from_millis(args.interval);
+    let using_transport = transport_endpoint.is_some();
 
     println!("TPT Protocol Daemon v0.1.0");
-    println!("Simulating: {protocol}");
+    if using_transport {
+        println!("Decoding {protocol} from a transport");
+    } else {
+        println!(
+            "Simulating: {protocol} (one point every {} ms)",
+            args.interval
+        );
+    }
 
     if !loopback {
-        eprintln!(
-            "WARNING: binding to non-loopback address '{bind}'. Host-header checks are \
-             disabled; expose the WebSocket API only on a trusted network and use --token."
+        tracing::warn!(
+            "binding to non-loopback address '{bind}'. Host-header checks are disabled; \
+             expose the WebSocket API only on a trusted network and use --token."
         );
     }
 
     let mut allowed_origins: Vec<String> = TAURI_ORIGINS.iter().map(|o| o.to_string()).collect();
     allowed_origins.extend(args.allow_origin.iter().map(|o| normalize_origin(o)));
-    let policy = Arc::new(WsPolicy {
+    let policy = WsPolicy {
         token: args.token,
         allowed_origins,
         check_host: loopback,
-    });
+    };
 
+    // Devices and the simulation write to `source_tx`. The mapping stage applies
+    // the [[map]] rules and forwards to `tx`, which the clients and the recorder read.
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
+    let (source_tx, _) = broadcast::channel::<DataPoint>(1024);
+    tokio::spawn(mapping::run(map_rules, source_tx.subscribe(), tx.clone()));
+    if let Some(path) = args.record.clone() {
+        let record_tx = tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = record::run(&path, record_tx).await {
+                tracing::error!("recording stopped: {e:#}");
+            }
+        });
+    }
+    let state = Arc::new(ServerState::new(policy, tx.clone()));
+
+    // Bind before spawning anything, so a busy port is a startup error.
+    let listener = TcpListener::bind((bind.as_str(), port))
+        .await
+        .map_err(|e| anyhow!("cannot listen on {bind}:{port}: {e}"))?;
+    let local = listener.local_addr()?;
 
     match transport_endpoint {
         Some(endpoint) => {
             // Real bytes from a device replace the simulation.
-            let real_tx = tx.clone();
+            let real_tx = source_tx.clone();
             let real_protocol = protocol.clone();
             tokio::spawn(async move {
-                if let Err(e) = transport::run(endpoint, real_protocol.clone(), real_tx).await {
-                    eprintln!("{real_protocol}: transport stopped: {e}");
+                match transport::run(endpoint, real_protocol.clone(), real_tx).await {
+                    Ok(()) => tracing::warn!(
+                        "{real_protocol}: transport finished; no more data will arrive"
+                    ),
+                    Err(e) => tracing::error!("{real_protocol}: transport stopped: {e}"),
                 }
             });
         }
         None => {
-            let stream: Pin<Box<dyn Stream<Item = DataPoint> + Send>> = plugin.simulate();
-            let sim_tx = tx.clone();
+            let stream =
+                plugins::simulate_stream(&protocol, interval).map_err(|e| anyhow!("{e}"))?;
+            let sim_tx = source_tx.clone();
             let sim_name = protocol.clone();
             tokio::spawn(async move {
                 let mut stream = stream;
                 while let Some(dp) = stream.next().await {
                     let _ = sim_tx.send(dp);
                 }
-                eprintln!("simulation stream for {sim_name} ended");
+                tracing::warn!("simulation stream for {sim_name} ended");
             });
         }
     }
 
-    let ws_tx = tx.clone();
-    let bind_clone = bind.clone();
+    let server_state = Arc::clone(&state);
     tokio::spawn(async move {
-        if let Err(e) = ws_server(&bind_clone, port, ws_tx, policy).await {
-            eprintln!("WebSocket server error: {e}");
+        if let Err(e) = ws_server(listener, server_state).await {
+            tracing::error!("WebSocket server error: {e}");
         }
     });
 
-    println!("WebSocket server listening on ws://{bind}:{port}");
+    println!("WebSocket server listening on ws://{local}");
+    println!("Health check: http://{local}/healthz");
 
     tokio::signal::ctrl_c().await?;
     println!("\nShutting down...");
@@ -494,7 +709,8 @@ mod tests {
     #[test]
     fn all_protocols_buildable() {
         // There are 19 protocol crates wired into the daemon.
-        assert_eq!(plugins::list_protocols().len(), 19);
+        // The 19 built-in protocols at least; scaffolded protocols add to the count.
+        assert!(plugins::list_protocols().len() >= 19);
         for name in plugins::list_protocols() {
             assert!(
                 plugins::build_plugin(name).is_ok(),
@@ -637,6 +853,7 @@ mod tests {
             simulate: Some("canopen".into()),
             port: Some(7000),
             bind: Some("0.0.0.0".into()),
+            map: Vec::new(),
         };
         let s = resolve_settings(Some("modbus".into()), Some(9999), None, file);
         assert_eq!(
@@ -698,5 +915,192 @@ mod tests {
                 "{file}"
             );
         }
+    }
+
+    /// Every bundled sample, its protocol, and the format `--replay` reads it in.
+    /// Each sample must replay to a data point; that keeps the samples honest.
+    const SAMPLES: &[(&str, &str, &str)] = &[
+        ("modbus", "modbus-write-single-register-1.hex", "hex"),
+        ("modbus", "modbus-write-single-register-2.hex", "hex"),
+        ("j1939", "j1939-eec1.hex", "hex"),
+        ("isobus", "isobus-pto.hex", "hex"),
+        ("canopen", "canopen-tpdo1.hex", "hex"),
+        ("uds", "uds-negative-response.hex", "hex"),
+        ("mavlink", "mavlink-heartbeat.hex", "hex"),
+        ("coap", "coap-response.hex", "hex"),
+        ("bacnet", "bacnet-read-property-ack.hex", "hex"),
+        ("doip-someip", "doip-diagnostic.hex", "hex"),
+        ("dnp3", "dnp3-response.hex", "hex"),
+        ("ethercat", "ethercat-lrd.hex", "hex"),
+        ("knx", "knx-group-write.hex", "hex"),
+        ("opcua", "opcua-message.hex", "hex"),
+        ("matter-thread", "matter-report-data.hex", "hex"),
+        ("sparkplugb", "sparkplugb-ddata.hex", "hex"),
+        ("nmea", "nmea-gga.raw", "raw"),
+        ("ocpp", "ocpp-boot-notification.raw", "raw"),
+        ("hl7v2", "hl7v2-oru.raw", "raw"),
+        ("ieee11073-sdc", "ieee11073-sdc-report.raw", "raw"),
+    ];
+
+    #[test]
+    fn every_bundled_sample_replays_to_a_data_point() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/samples");
+        for (protocol, file, format) in SAMPLES {
+            let raw =
+                std::fs::read(format!("{dir}/{file}")).unwrap_or_else(|e| panic!("{file}: {e}"));
+            let bytes = replay_bytes(format, raw).unwrap_or_else(|e| panic!("{file}: {e}"));
+            plugins::replay_one(protocol, &bytes)
+                .unwrap_or_else(|e| panic!("{file} ({protocol}): {e}"));
+        }
+        // Every sample file in the directory is listed above, so none is forgotten.
+        let on_disk = std::fs::read_dir(dir).unwrap().count();
+        assert_eq!(on_disk, SAMPLES.len(), "a sample file is not in SAMPLES");
+    }
+
+    #[test]
+    fn candump_capture_replays_through_a_can_protocol() {
+        let capture = "(1700000000.25) can0 181#01020000\n(1700000000.5) can0 7FF#00\n";
+        let points = replay_candump("canopen", capture.as_bytes()).unwrap();
+        // Both frames are valid CANopen messages: 0x181 is TPDO1 from node 1, and 0x7FF
+        // is a frame of another function code. Each keeps its capture timestamp.
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0].value, tpt_protocol_tup::TupValue::Int(0x0201));
+        assert_eq!(points[0].timestamp, 1_700_000_000_250);
+        assert_eq!(points[1].timestamp, 1_700_000_000_500);
+    }
+
+    #[test]
+    fn candump_replay_needs_a_can_protocol() {
+        assert!(replay_candump("modbus", b"(1.0) can0 181#0102\n").is_err());
+    }
+
+    #[test]
+    fn detection_ranks_the_right_protocol_first() {
+        let hex = include_str!("../samples/canopen-tpdo1.hex");
+        let bytes = decode_hex_file(hex.as_bytes()).unwrap();
+        let ranking = detect::rank(&bytes);
+        assert_eq!(ranking.first().map(|s| s.protocol), Some("canopen"));
+    }
+
+    #[test]
+    fn raw_replay_passes_binary_through() {
+        // The same frame as the hex sample, supplied as binary (`--replay-format raw`).
+        let hex_text = include_str!("../samples/modbus-write-single-register-1.hex");
+        let expected = decode_hex_file(hex_text.as_bytes()).unwrap();
+        let got = replay_bytes("raw", expected.clone()).unwrap();
+        assert_eq!(got, expected);
+        let dp = plugins::replay_one("modbus", &got).unwrap();
+        assert_eq!(dp.value, tpt_protocol_tup::TupValue::Int(0x0102));
+    }
+
+    #[test]
+    fn replay_format_is_checked() {
+        assert!(replay_bytes("hex", vec![0xFF, 0xFE]).is_err());
+        assert!(replay_bytes("json", vec![]).is_err());
+    }
+
+    #[test]
+    fn simulation_interval_is_honoured() {
+        // Two points 200 ms apart should not arrive in under 200 ms in total.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let mut stream =
+                plugins::simulate_stream("modbus", Duration::from_millis(200)).unwrap();
+            let start = Instant::now();
+            stream.next().await.unwrap();
+            stream.next().await.unwrap();
+            assert!(start.elapsed() >= Duration::from_millis(400));
+        });
+    }
+
+    fn test_state() -> (Arc<ServerState>, broadcast::Sender<DataPoint>) {
+        let (tx, _) = broadcast::channel::<DataPoint>(16);
+        let policy = WsPolicy {
+            token: None,
+            allowed_origins: TAURI_ORIGINS.iter().map(|o| o.to_string()).collect(),
+            check_host: true,
+        };
+        (Arc::new(ServerState::new(policy, tx.clone())), tx)
+    }
+
+    async fn start_server(state: Arc<ServerState>) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(ws_server(listener, state));
+        addr
+    }
+
+    #[tokio::test]
+    async fn ws_origin_policy_end_to_end() {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+        let (state, tx) = test_state();
+        let addr = start_server(state).await;
+        let url = format!("ws://{addr}/");
+
+        // A Tauri origin is allowed: the handshake succeeds and points flow.
+        let mut req = url.as_str().into_client_request().unwrap();
+        req.headers_mut()
+            .insert("origin", "tauri://localhost".parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .expect("allowed origin connects");
+
+        let dp = DataPoint::new(
+            tpt_protocol_tup::SourceProtocol::Modbus,
+            "dev-1".to_string(),
+            "pt-1".to_string(),
+            1_700_000_000_000,
+            tpt_protocol_tup::TupValue::Float(1.5),
+            tpt_protocol_tup::Quality::Good,
+        );
+        // The server subscribes after its handshake, so resend until one arrives.
+        let text = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let _ = tx.send(dp.clone());
+                if let Ok(Some(Ok(Message::Text(text)))) =
+                    tokio::time::timeout(Duration::from_millis(50), ws.next()).await
+                {
+                    return text;
+                }
+            }
+        })
+        .await
+        .expect("a data point arrives");
+        assert!(text.starts_with('['), "{text}");
+        assert!(text.contains("pt-1"), "{text}");
+
+        // A foreign origin is refused with HTTP 403 before the upgrade.
+        let mut bad = url.as_str().into_client_request().unwrap();
+        bad.headers_mut()
+            .insert("origin", "https://evil.example".parse().unwrap());
+        match tokio_tungstenite::connect_async(bad).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+                assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+            }
+            other => panic!("expected HTTP 403, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[tokio::test]
+    async fn healthz_reports_counters_without_data() {
+        let (state, _tx) = test_state();
+        let addr = start_server(Arc::clone(&state)).await;
+
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            .await
+            .unwrap();
+        let mut out = String::new();
+        stream.read_to_string(&mut out).await.unwrap();
+
+        assert!(out.starts_with("HTTP/1.1 200 OK"), "{out}");
+        assert!(out.contains("\"status\":\"ok\""), "{out}");
+        assert!(out.contains("\"rejected_handshakes\":0"), "{out}");
+        assert!(out.contains("\"active\":1"), "{out}");
     }
 }
