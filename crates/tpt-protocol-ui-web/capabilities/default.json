@@ -4,7 +4,6 @@
   "description": "Core capabilities for the TPT Protocol fleet dashboard webview.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "core:webview:allow-internal-toggle-devtools"
+    "core:default"
   ]
 }

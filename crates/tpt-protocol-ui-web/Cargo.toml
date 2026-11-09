@@ -5,12 +5,12 @@ version = "0.1.0"
 description = "Tauri v2 + SvelteKit fleet dashboard for the TPT Protocol daemon"
 keywords = ["tpt", "protocol", "ui", "tauri", "dashboard"]
 categories = ["gui"]
-authors.workspace = true
-edition.workspace = true
+authors = ["TPT Solutions"]
+edition = "2021"
 rust-version = "1.90"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/tpt-protocol/tpt-protocol"
+repository = "https://github.com/tpt-protocol/tpt-protocol"
 
 [lib]
 name = "tpt_protocol_ui_web_lib"
@@ -25,9 +25,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-serde = { workspace = true }
-serde_json = { workspace = true, features = ["std"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
-tpt-protocol-tup = { workspace = true, features = ["std"] }
+tpt-protocol-tup = { version = "0.1.0", path = "../tpt-protocol-tup", default-features = false, features = ["std"] }
+
+# Standalone workspace root: this crate is excluded from the main workspace.
+[workspace]

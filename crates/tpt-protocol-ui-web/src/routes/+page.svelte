@@ -13,11 +13,17 @@
     unit?: string;
   }
 
+  /// Newest rows kept on screen. Older points are dropped, not stored.
+  const MAX_POINTS = 500;
+  const RECONNECT_MS = 3000;
+
   let points: DataPoint[] = [];
   let connected = false;
   let daemonUrl = 'ws://127.0.0.1:9080';
   let error: string | null = null;
   let ws: WebSocket | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let destroyed = false;
 
   // Resolve the daemon URL from the Tauri command when running inside the app.
   async function resolveDaemonUrl() {
@@ -31,31 +37,58 @@
     }
   }
 
+  function scheduleReconnect() {
+    if (destroyed) return;
+    if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, RECONNECT_MS);
+  }
+
   function connect() {
+    reconnectTimer = null;
+    if (destroyed) return;
     error = null;
-    ws = new WebSocket(daemonUrl);
-    ws.onopen = () => (connected = true);
-    ws.onclose = () => {
+    const socket = new WebSocket(daemonUrl);
+    ws = socket;
+    socket.onopen = () => (connected = true);
+    socket.onclose = () => {
       connected = false;
-      setTimeout(connect, 3000);
+      if (ws === socket) ws = null;
+      scheduleReconnect();
     };
-    ws.onerror = () => (error = 'WebSocket error');
-    ws.onmessage = (ev) => {
+    socket.onerror = () => (error = 'WebSocket error');
+    socket.onmessage = (ev) => {
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(ev.data);
-        const items = Array.isArray(parsed) ? parsed : [parsed];
-        for (const item of items) {
-          points = [...points, item].slice(-500);
-        }
+        parsed = JSON.parse(ev.data);
       } catch {
         error = 'Failed to parse message';
+        return;
       }
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      // The daemon sends `{"type":"lagged","dropped":N}` when this client falls
+      // behind. That is a notice, not a data point.
+      const data = items.filter((item) => !(item && item.type === 'lagged'));
+      const lagged = items.find((item) => item && item.type === 'lagged');
+      if (lagged) error = `Daemon dropped ${lagged.dropped} messages (client too slow)`;
+      if (data.length === 0) return;
+      // One assignment per message, trimmed once: no copy per item.
+      const next = points.concat(data);
+      points = next.length > MAX_POINTS ? next.slice(-MAX_POINTS) : next;
     };
   }
 
-  onMount(async () => {
-    await resolveDaemonUrl();
-    connect();
+  onMount(() => {
+    (async () => {
+      await resolveDaemonUrl();
+      if (!destroyed) connect();
+    })();
+    return () => {
+      destroyed = true;
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      ws?.close();
+      ws = null;
+    };
   });
 
   function fmtTime(ts: number) {
