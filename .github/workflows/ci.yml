@@ -86,11 +86,11 @@ jobs:
   msrv:
     # Pinned to the workspace rust-version. The ui-* apps are not workspace
     # members (they need Rust 1.90 and are built standalone).
-    name: MSRV (1.81)
+    name: MSRV (1.85)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.81
+      - uses: dtolnay/rust-toolchain@1.85
       - run: cargo check --workspace
 
   cargo-deny:
