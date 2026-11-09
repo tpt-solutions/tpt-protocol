@@ -25,7 +25,7 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 │  BACnet       │───┼───┼──▶│  ┌────────────────────┐   │   │  ├────────────────┤
 │  Building     │   │   │   │  │ Local WebSocket/   │   │   │  │  Web UI        │
 ├───────────────┤   │   │   │  │ REST API (127.0.0.1)│   │   │  │  (Tauri/Svelte)│
-│  ...16 more   │───┼───┼──▶│  └────────────────────┘   │   │  └────────────────┘
+│  ...15 more   │───┼───┼──▶│  └────────────────────┘   │   │  └────────────────┘
 └───────────────┘   │   └──────────────────────────────┘   │
                     └──────────────────────────────────────┘
 ```
@@ -92,9 +92,13 @@ cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 cargo run --bin tpt-protocol-cli
 ```
 
-The daemon currently ships **simulation only** — every protocol produces
-synthetic TUP data points so the pipeline can be exercised end-to-end without
-hardware. Real transport (Serial/CAN/TCP/UDP) is future work.
+The daemon has two data sources. By default every protocol produces synthetic
+TUP data points, so the pipeline runs end-to-end without hardware. Pass a
+transport flag to decode real bytes instead: `--tcp-connect`, `--tcp-listen`,
+`--udp-bind`, and (with the `serial` or `socketcan` feature) `--serial` and
+`--can`. Serial and SocketCAN are tested only against a pseudo-terminal pair
+and a `vcan0` interface, not real hardware. See the
+[daemon README](crates/tpt-protocol-daemon/README.md#transports).
 
 ## Architecture
 

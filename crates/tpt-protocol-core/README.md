@@ -227,8 +227,9 @@ impl DataNormalizer for SensorXNormalizer {
 
 Once a protocol implements these traits, the daemon can drive it by adding a
 `ProtocolPlugin` entry (behind the `std` feature) — see
-`tpt-protocol-daemon/src/plugins/mod.rs` and the `scripts/new-protocol-crate.sh`
-scaffolding script in the workspace root.
+`tpt-protocol-daemon/src/plugins/mod.rs`. `cargo xtask new-protocol <name>`
+scaffolds the crate and does that wiring; see
+[`docs/bring-your-own-protocol.md`](../../docs/bring-your-own-protocol.md).
 
 ## Crate layout
 

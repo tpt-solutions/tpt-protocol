@@ -10,6 +10,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - A `Dockerfile` for the daemon (untested: no Docker daemon was available).
 - `CONTRIBUTING.md` now accepts contributions as issues only. Pull requests are not accepted.
+- Runnable `examples/parse_*.rs` for all 19 protocols, and a replayable sample for each in the daemon's `samples/`. Every sample is replayed by a daemon test.
+- Daemon transports behind a `Transport`/`ByteLink` trait pair. TCP, UDP, serial, SocketCAN and the new `--stdin` all share one framer and supervisor.
+- Daemon: `--stdin`, `--interval MS`, `--record FILE` (NDJSON), `--detect FILE` (protocol ranking), `--replay-format candump`, `[[map]]` rules (rename, unit, scale, range check), and `GET /healthz` on the WebSocket port.
+- Daemon: `tracing` logs to stderr with `RUST_LOG`; one Cargo feature per protocol, all on by default.
+- `cargo xtask new-protocol <name>` scaffolds a protocol crate and wires it into the workspace, the wire schema (CDDL and JSON Schema), the daemon and the fuzz targets. `--dry-run` shows the changes. Replaces `scripts/new-protocol-crate.sh`.
+- `docs/bring-your-own-protocol.md`: a guide to adding a protocol.
+- `tpt-protocol-bindings`: a C ABI (`include/tpt_protocol.h`), a WebAssembly build with a browser playground (`www/`), and a Python module. All three decode one frame to TUP JSON.
+- Release workflow (`.github/workflows/release.yml`): builds the daemon and CLI for Linux, Windows and macOS on a version tag.
+- CI: docs (with `-D warnings`), telos verification, Windows and macOS test jobs, the UI crates (clippy, svelte-check, Vite build), a weekly scheduled run.
+- Structured property tests for DNP3 and MAVLink, generating well-formed frames and mutating them.
+- BACnet ReadProperty answers decode their value (REAL, unsigned, signed, enumerated, boolean and other application types).
+- HL7 v2: one point per OBX observation, with numeric results as floats, units, and quality from the result status.
+- Dependency versions shared by several crates are declared once in `[workspace.dependencies]`.
+
+### Changed
+- Normalizers return an error for a frame that carries no measurement, instead of a placeholder value. Affected: DNP3 (a bare request), DoIP/SOME-IP (a header-only message), ISOBUS, J1939, KNX (an empty telegram), NMEA (a sentence with no decodable field), Sparkplug B (a payload with no metric and no sequence number). A length or a zero was being reported as a reading.
+- DNP3 and DoIP report their payload as bytes instead of its length.
+- The daemon's simulation feeds a separate source channel, and the mapping stage forwards to the clients, so the WebSocket API and recordings see mapped points.
+- The daemon's logs are plain text when stderr is not a terminal.
+- The TUI shows timestamps as UTC with the date (`2026-11-09 14:03:07.512Z`).
+- The TUI follows the newest rows; scrolling up pauses that, and `End` resumes it.
+- The web UI's CSP allows loopback on any port (it hard-coded 9080).
+- The web UI no longer enables the devtools permission in release builds.
+
+### Fixed
+- The TUI answered no pings, because its read loop dropped the write half.
+- The web UI's Vite config imported from the wrong package and was missing `src/app.html`, so it never built.
+- The web UI rendered daemon lagged-notices as data rows.
+- The embedded UI panicked if the Slint event task could not start, and its channel grew without bound.
+- `rustdoc` rejected two `[0]`-style byte-index comments under `-D warnings` (CoAP, KNX).
+- The `msrv` CI job fails on master: `minicbor 2.3` and `clap_lex` need edition 2024 (Rust 1.85). Open decision; see TODO.md.
 
 ### Removed
 - `CODE_OF_CONDUCT.md`, `SECURITY.md` and the pull request template, by maintainer decision.

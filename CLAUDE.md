@@ -32,9 +32,13 @@ cargo package --list -p <crate-name>
 # Run the daemon (simulated data) + TUI in separate terminals
 cargo run --bin tpt-protocol-daemon -- --simulate modbus
 cargo run --bin tpt-protocol-cli
+
+# Scaffold a new protocol crate and wire it into the workspace, the wire schema,
+# the daemon and the fuzz targets (see docs/bring-your-own-protocol.md)
+cargo xtask new-protocol <name>
 ```
 
-CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, `docs` (`cargo doc` with `-D warnings`), `telos` (formal verification, `--features verify`), `no_std` (build for `thumbv6m-none-eabi`), `msrv` (check on Rust 1.81), `cargo-deny`, `ui-embedded` (clippy, Windows runner), and `ui-web` (svelte-check and Vite build). It also runs weekly on a schedule. Nightly fuzzing of every parser runs from `.github/workflows/fuzz.yml`; cargo-fuzz does not link on Windows, so run fuzz targets on Linux (`cargo +nightly fuzz run <target> --fuzz-dir fuzz`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
+CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, `docs` (`cargo doc` with `-D warnings`), `telos` (formal verification, `--features verify`), `no_std` (build for `thumbv6m-none-eabi`), `msrv` (check on Rust 1.81), `cargo-deny`, `ui-embedded` (clippy, Windows runner), and `ui-web` (svelte-check and Vite build), and `test-os` (the test suite on Windows and macOS). It also runs weekly on a schedule. `release.yml` builds the daemon and CLI for three platforms when a `v*` tag is pushed. Nightly fuzzing of every parser runs from `.github/workflows/fuzz.yml`; cargo-fuzz does not link on Windows, so run fuzz targets on Linux (`cargo +nightly fuzz run <target> --fuzz-dir fuzz`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
 
 ## Architecture
 
@@ -53,6 +57,8 @@ CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, 
 4. **`tpt-protocol-daemon`** — std binary. Implements `ProtocolPlugin` per protocol (see `ModbusPlugin` in `main.rs` for the pattern — simulated streams today, real transports added incrementally), serves a local-only WebSocket API (binds `127.0.0.1`, via `tokio-tungstenite`) streaming TUP as JSON.
 
 5. **`tpt-protocol-cli`** — std binary, `ratatui` TUI, connects to the daemon's WebSocket for a live data dashboard.
+6. **`tpt-protocol-bindings`** — `publish = false`. A C ABI (`include/tpt_protocol.h`, hand-written and checked by tests), a WebAssembly build (`--features wasm`, pinned wasm-bindgen) and a Python module (`--features python`). Each decodes one frame to TUP JSON through its own dispatch table.
+7. **`xtask`** — std-only workspace task runner (`cargo xtask`). Its `new-protocol` command is the one place that knows how a protocol is wired in.
 
 **Naming**: every protocol crate is `tpt-protocol-<name>` and is published to crates.io (`publish` unset). Each is a from-scratch reimplementation (never a wrapper around the crates.io crate it's compared to), with the same dependency shape (`tpt-protocol-core` + `tpt-protocol-tup` only). A crate is published because there is a concrete reason its alternative falls short: a no_std gap (e.g. `tokio-modbus`, `coap-rs`, `canopen`), a license gap (e.g. `nmea`, `rs-matter`), an unmaintained crate (`ocpp`), or no crate at all (`uds`). The exception is `tpt-protocol-ethercat` and `tpt-protocol-mavlink`, which are also published. See the reasoning table in `TODO.md` (Phase 3/4) before changing publish status on any crate.
 
