@@ -490,4 +490,29 @@ mod tests {
         app.scroll_to_end();
         assert!(app.follow);
     }
+
+    #[test]
+    fn parses_a_data_point_array_and_a_single_object() {
+        use tpt_protocol_tup::{SourceProtocol, TupValue};
+        let dp = DataPoint::new(
+            SourceProtocol::Modbus,
+            "dev",
+            "pt",
+            1,
+            TupValue::Int(7),
+            Quality::Good,
+        );
+        let text = json::to_json_string(&dp).unwrap();
+        let from_array = parse_data_points(&format!("[{text},{text}]")).unwrap();
+        assert_eq!(from_array.len(), 2);
+        assert_eq!(from_array[0].point_id, "pt");
+        assert_eq!(from_array[0].value, TupValue::Int(7));
+        let single = parse_data_points(&text).unwrap();
+        assert_eq!(single.len(), 1);
+    }
+
+    #[test]
+    fn malformed_json_is_reported_not_panicked() {
+        assert!(parse_data_points("[not json").is_err());
+    }
 }
