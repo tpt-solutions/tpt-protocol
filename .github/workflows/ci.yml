@@ -124,6 +124,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo bench --workspace --no-run
 
+  mqtt:
+    # The MQTT sink against a real broker. The broker is started with `docker run`
+    # rather than a service container, because the image needs a command override to
+    # allow anonymous clients from the runner.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: docker run -d --name mqtt -p 127.0.0.1:1883:1883 eclipse-mosquitto:2 mosquitto -c /mosquitto-no-auth.conf
+      - run: cargo test -p tpt-protocol-daemon --features mqtt -- --ignored mqtt
+        env:
+          TPT_MQTT_TEST_ADDR: 127.0.0.1:1883
+
   python-wheel:
     # Builds the Python module as a wheel. The wheel is not uploaded anywhere.
     runs-on: ubuntu-latest

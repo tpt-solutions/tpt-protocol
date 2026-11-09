@@ -5,6 +5,7 @@ mod mapping;
 mod pcap;
 mod plugins;
 mod record;
+mod sink;
 mod transport;
 
 use std::net::{IpAddr, SocketAddr};
@@ -81,6 +82,13 @@ struct Args {
     /// Append every data point to this file as NDJSON, one JSON object per line.
     #[arg(long)]
     record: Option<std::path::PathBuf>,
+    /// Publish every point as JSON to an MQTT broker at HOST:PORT (plain TCP). Needs the
+    /// `mqtt` feature. Topics are `<prefix>/<protocol>/<device>/<point>`.
+    #[arg(long = "mqtt")]
+    mqtt: Option<String>,
+    /// Topic prefix for `--mqtt`.
+    #[arg(long = "mqtt-prefix", default_value = "tpt")]
+    mqtt_prefix: String,
     /// Require this token on WebSocket connections, as `?token=` or `Authorization: Bearer`.
     #[arg(long)]
     token: Option<String>,
@@ -735,6 +743,9 @@ async fn main() -> Result<()> {
         source_tx.subscribe(),
         tx.clone(),
     ));
+    if let Some(addr) = args.mqtt.clone() {
+        sink::spawn_mqtt(&addr, &args.mqtt_prefix, tx.subscribe())?;
+    }
     if let Some(path) = args.record.clone() {
         let record_tx = tx.clone();
         tokio::spawn(async move {

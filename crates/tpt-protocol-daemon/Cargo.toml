@@ -46,6 +46,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-serial = { version = "5", optional = true }
+rumqttc = { version = "0.25", optional = true }
 futures-util = "0.3"
 anyhow = { workspace = true }
 toml = { workspace = true }
@@ -87,3 +88,6 @@ coap = ["dep:tpt-protocol-coap"]
 serial = ["dep:tokio-serial"]
 # SocketCAN (Linux only). Needs a CAN interface such as vcan0 to exercise.
 socketcan = ["dep:socketcan"]
+# MQTT sink: publishes each TUP point as JSON to a broker. Off by default; it needs a
+# broker to exercise (see the `mqtt` integration test).
+mqtt = ["dep:rumqttc"]

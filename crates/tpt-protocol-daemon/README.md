@@ -219,6 +219,20 @@ but carry no data (such as Modbus read requests) are skipped. The
 beside the plugin, and the plugin is not used when an endpoint is set.
 Without a flag the daemon simulates, and `--replay` reads bytes from a file.
 
+### Sinks (`src/sink.rs`)
+
+A sink sends the points somewhere other than the local WebSocket. The MQTT sink
+is behind the `mqtt` feature (`cargo build --features mqtt`):
+
+- `--mqtt HOST:PORT [--mqtt-prefix tpt]`: publishes each point as its JSON to
+  `<prefix>/<protocol>/<device>/<point>`, QoS 0, not retained. Publishing never
+  waits: when the broker is slow or down, points are dropped and counted in the
+  log, so the devices are not held up. Plain TCP only (no TLS, no auth yet).
+
+Tested against a real Mosquitto 2.1.2 broker (the `mqtt` CI job, and an end-to-end
+run: pymodbus server, `--modbus-poll`, `--mqtt`, `mosquitto_sub`). Not done: InfluxDB,
+Prometheus remote-write, OpenTelemetry, and an OPC UA server.
+
 ### Simulation
 
 Without a transport the daemon simulates one protocol. `--interval MS` sets the
