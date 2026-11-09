@@ -294,7 +294,11 @@ impl DataNormalizer for IsobusNormalizer {
         } else if !frame.payload.is_empty() {
             TupValue::Bytes(frame.payload.clone())
         } else {
-            TupValue::Int(0)
+            // No payload means no measurement; zero would read as a real value.
+            return Err(Error::Normalize(format!(
+                "isobus pgn {:?} carries no data",
+                frame.pgn
+            )));
         };
 
         Ok(DataPoint::new(
