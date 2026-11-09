@@ -28,4 +28,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 tpt-protocol-tup = { path = ".", features = ["std"] }
-jsonschema = "0.17"
+# default-features off: the default `resolve-http` feature pulls in reqwest/h2
+# (RUSTSEC-2026-0258). The schema is self-contained, so no remote $ref fetch is needed.
+jsonschema = { version = "0.61", default-features = false }

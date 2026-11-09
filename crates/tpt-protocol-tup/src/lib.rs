@@ -88,8 +88,6 @@ pub mod cbor;
 
 #[cfg(test)]
 mod schema_tests {
-    use super::*;
-
     /// The worked example from SPEC-TUP.md §4, kept in sync with
     /// `schema/tup-v1.schema.json`.
     const WORKED_EXAMPLE: &str = r#"{
@@ -111,12 +109,12 @@ mod schema_tests {
         let instance: serde_json::Value =
             serde_json::from_str(WORKED_EXAMPLE).expect("worked example is valid JSON");
 
-        let compiled = jsonschema::JSONSchema::compile(&schema).expect("schema compiles");
-        let result = compiled.validate(&instance);
+        let validator = jsonschema::validator_for(&schema).expect("schema compiles");
+        let result = validator.validate(&instance);
         assert!(
             result.is_ok(),
             "worked example failed schema validation: {:?}",
-            result.err().map(|e| e.collect::<Vec<_>>())
+            result.as_ref().err()
         );
     }
 }

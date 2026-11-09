@@ -320,7 +320,7 @@ mod tests {
     fn encoded_values_validate_against_json_schema() {
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../../../schema/tup-v1.schema.json")).unwrap();
-        let compiled = jsonschema::JSONSchema::compile(&schema).expect("schema compiles");
+        let validator = jsonschema::validator_for(&schema).expect("schema compiles");
         let values = [
             TupValue::Int(-3),
             TupValue::Float(2.5),
@@ -333,7 +333,7 @@ mod tests {
         for value in values {
             let json = to_json_string(&dp_with(value.clone())).unwrap();
             let instance: serde_json::Value = serde_json::from_str(&json).unwrap();
-            assert!(compiled.validate(&instance).is_ok(), "{value:?} -> {json}");
+            assert!(validator.validate(&instance).is_ok(), "{value:?} -> {json}");
         }
     }
 }
