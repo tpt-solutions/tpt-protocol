@@ -4,3 +4,7 @@
 .vscode/
 *.pdb
 .DS_Store
+
+# Node / SvelteKit (ui-web)
+node_modules/
+.svelte-kit/
