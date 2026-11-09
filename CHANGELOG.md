@@ -8,7 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1, with the enforcement contact still to be filled in) and a `Dockerfile` for the daemon (untested: no Docker daemon was available).
+- A `Dockerfile` for the daemon (untested: no Docker daemon was available).
+- `CONTRIBUTING.md` now accepts contributions as issues only. Pull requests are not accepted.
+
+### Removed
+- `CODE_OF_CONDUCT.md`, `SECURITY.md` and the pull request template, by maintainer decision.
 - Daemon transports: `--tcp-connect`, `--tcp-listen`, `--udp-bind` and (with the `serial` feature) `--serial` read real bytes and decode them with each protocol's `try_parse` and normalizer. `--can` (Linux, with the `socketcan` feature) reads CANopen, J1939 and ISOBUS frames, tested on a `vcan0` interface.
 - `DataNormalizer::normalize_all` returns every point a frame carries. `normalize_batch` uses it, so batches fan out. Sparkplug, Matter, NMEA and SDC override it.
 - `FrameEncoder` trait in `tpt-protocol-core`, the inverse of `FrameParser`, and `ModbusEncoder`, with round-trip tests.
@@ -17,7 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Structured Modbus MBAP property test (valid header, skewed length, mutation).
 - `fuzz/` cargo-fuzz crate with one target per protocol parser (`parse` and `try_parse`) and
   for the TUP CBOR and JSON decoders. Nightly job in `.github/workflows/fuzz.yml`.
-- `msrv` CI job (Rust 1.81). Dependabot, SECURITY.md, and issue/PR templates.
+- `msrv` CI job (Rust 1.81). Dependabot and an issue template.
 - Daemon `--replay-format hex|raw` (default `hex`); `--replay` now requires `--simulate`.
 - Daemon `--token` and `--allow-origin` flags.
 - Daemon answers WebSocket `Ping` frames and stops on `Close`. Clients that fall
