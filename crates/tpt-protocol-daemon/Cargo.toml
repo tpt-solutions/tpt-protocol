@@ -46,7 +46,7 @@ clap = { workspace = true }
 tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-serial = { version = "5", optional = true }
-rumqttc = { version = "0.25", optional = true }
+rumqttc = { version = "0.25", default-features = false, optional = true }
 mcap = { version = "0.26", optional = true, default-features = false }
 futures-util = "0.3"
 anyhow = { workspace = true }
