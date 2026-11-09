@@ -647,6 +647,41 @@ impl FrameEncoder for ModbusEncoder {
     }
 }
 
+/// Encodes Modbus TCP frames: the MBAP header, then the unit id and PDU. The
+/// transaction id is `ModbusRtuFrame::transaction_id` (0 when unset). Use this
+/// for a master that sends requests over TCP, such as a poller.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ModbusTcpEncoder;
+
+/// The longest Modbus TCP ADU is 260 bytes: a 7-byte MBAP header and a 253-byte PDU.
+const MAX_TCP_PDU: usize = 253;
+
+impl FrameEncoder for ModbusTcpEncoder {
+    type Frame = ModbusRtuFrame;
+
+    fn encode(&self, frame: &ModbusRtuFrame) -> Result<Vec<u8>, Error> {
+        let mut pdu = Vec::with_capacity(MAX_TCP_PDU);
+        pdu.push(frame_to_func_code(&frame.frame));
+        pdu.extend_from_slice(&pdu_data(&frame.frame));
+        if pdu.len() > MAX_TCP_PDU {
+            return Err(Error::Parse(format!(
+                "Modbus TCP PDU of {} bytes exceeds the {MAX_TCP_PDU}-byte limit",
+                pdu.len()
+            )));
+        }
+        // The MBAP length counts the unit id and the PDU.
+        let length = (pdu.len() + 1) as u16;
+        let tid = frame.transaction_id.unwrap_or(0);
+        let mut out = Vec::with_capacity(7 + pdu.len());
+        out.extend_from_slice(&tid.to_be_bytes());
+        out.extend_from_slice(&[0x00, 0x00]);
+        out.extend_from_slice(&length.to_be_bytes());
+        out.push(frame.slave_address);
+        out.extend_from_slice(&pdu);
+        Ok(out)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Validator
 // ---------------------------------------------------------------------------
@@ -1446,6 +1481,28 @@ mod tests {
         // Streaming still frames the first message exactly.
         let (_, used) = ModbusParser::new().try_parse(&bytes).unwrap().unwrap();
         assert_eq!(used, exact.len());
+    }
+
+    #[test]
+    fn tcp_encoder_round_trips_through_the_parser() {
+        let frame = ModbusRtuFrame {
+            slave_address: 3,
+            frame: ModbusFrame::ReadHoldingRegisters {
+                address: 0x006B,
+                quantity: 3,
+            },
+            crc: 0,
+            transaction_id: Some(0x0042),
+        };
+        let bytes = ModbusTcpEncoder.encode(&frame).unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x00, 0x42, 0x00, 0x00, 0x00, 0x06, 0x03, 0x03, 0x00, 0x6B, 0x00, 0x03]
+        );
+        let parsed = ModbusParser::new().parse(&bytes).unwrap();
+        assert_eq!(parsed.transaction_id, Some(0x0042));
+        assert_eq!(parsed.slave_address, 3);
+        assert_eq!(parsed.frame, frame.frame);
     }
 
     #[test]

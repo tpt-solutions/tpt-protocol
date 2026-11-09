@@ -9,7 +9,9 @@ use tpt_protocol_modbus::ModbusParser;
 
 fn bench_parse(c: &mut Criterion) {
     // MBAP header (tid 1, pid 0, length 6, unit 1) + FC 0x03 read 10 holding registers at 0.
-    let tcp: [u8; 12] = [0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x0A];
+    let tcp: [u8; 12] = [
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x03, 0x00, 0x00, 0x00, 0x0A,
+    ];
     let parser = ModbusParser::new();
     c.bench_function("modbus_tcp_read_holding_request", |b| {
         b.iter(|| parser.parse(black_box(&tcp)))
