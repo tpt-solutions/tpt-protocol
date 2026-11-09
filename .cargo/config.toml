@@ -3,3 +3,7 @@
 # The workspace MSRV (1.81) is enforced by the `msrv` job in .github/workflows/ci.yml.
 [resolver]
 incompatible-rust-versions = "fallback"
+
+# `cargo xtask new-protocol <name>` scaffolds and wires a protocol crate.
+[alias]
+xtask = "run --quiet -p xtask --"

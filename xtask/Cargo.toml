@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+description = "Workspace tasks for TPT Protocol (run with `cargo xtask`)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+# Standard library only, so the tasks run the same on Windows, Linux and macOS.
+[dependencies]

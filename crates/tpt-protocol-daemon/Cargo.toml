@@ -19,40 +19,70 @@ path = "src/main.rs"
 [dependencies]
 tpt-protocol-core = { workspace = true, features = ["std"] }
 tpt-protocol-tup = { workspace = true, features = ["std"] }
-tpt-protocol-modbus = { path = "../tpt-protocol-modbus" }
-tpt-protocol-j1939 = { path = "../tpt-protocol-j1939" }
-tpt-protocol-isobus = { path = "../tpt-protocol-isobus" }
-tpt-protocol-uds = { path = "../tpt-protocol-uds" }
-tpt-protocol-canopen = { path = "../tpt-protocol-canopen" }
-tpt-protocol-doip-someip = { path = "../tpt-protocol-doip-someip" }
-tpt-protocol-nmea = { path = "../tpt-protocol-nmea" }
-tpt-protocol-mavlink = { path = "../tpt-protocol-mavlink" }
-tpt-protocol-bacnet = { path = "../tpt-protocol-bacnet" }
-tpt-protocol-opcua = { path = "../tpt-protocol-opcua" }
-tpt-protocol-dnp3 = { path = "../tpt-protocol-dnp3" }
-tpt-protocol-ethercat = { path = "../tpt-protocol-ethercat" }
-tpt-protocol-sparkplugb = { path = "../tpt-protocol-sparkplugb" }
-tpt-protocol-ocpp = { path = "../tpt-protocol-ocpp" }
-tpt-protocol-ieee11073-sdc = { path = "../tpt-protocol-ieee11073-sdc" }
-tpt-protocol-hl7v2 = { path = "../tpt-protocol-hl7v2" }
-tpt-protocol-knx = { path = "../tpt-protocol-knx" }
-tpt-protocol-matter-thread = { path = "../tpt-protocol-matter-thread" }
-tpt-protocol-coap = { path = "../tpt-protocol-coap" }
+# Protocol crates are optional so a build can carry only the parsers it needs.
+# Each one is enabled by the feature of the same name (see [features] below).
+tpt-protocol-modbus = { path = "../tpt-protocol-modbus", optional = true }
+tpt-protocol-j1939 = { path = "../tpt-protocol-j1939", optional = true }
+tpt-protocol-isobus = { path = "../tpt-protocol-isobus", optional = true }
+tpt-protocol-uds = { path = "../tpt-protocol-uds", optional = true }
+tpt-protocol-canopen = { path = "../tpt-protocol-canopen", optional = true }
+tpt-protocol-doip-someip = { path = "../tpt-protocol-doip-someip", optional = true }
+tpt-protocol-nmea = { path = "../tpt-protocol-nmea", optional = true }
+tpt-protocol-mavlink = { path = "../tpt-protocol-mavlink", optional = true }
+tpt-protocol-bacnet = { path = "../tpt-protocol-bacnet", optional = true }
+tpt-protocol-opcua = { path = "../tpt-protocol-opcua", optional = true }
+tpt-protocol-dnp3 = { path = "../tpt-protocol-dnp3", optional = true }
+tpt-protocol-ethercat = { path = "../tpt-protocol-ethercat", optional = true }
+tpt-protocol-sparkplugb = { path = "../tpt-protocol-sparkplugb", optional = true }
+tpt-protocol-ocpp = { path = "../tpt-protocol-ocpp", optional = true }
+tpt-protocol-ieee11073-sdc = { path = "../tpt-protocol-ieee11073-sdc", optional = true }
+tpt-protocol-hl7v2 = { path = "../tpt-protocol-hl7v2", optional = true }
+tpt-protocol-knx = { path = "../tpt-protocol-knx", optional = true }
+tpt-protocol-matter-thread = { path = "../tpt-protocol-matter-thread", optional = true }
+tpt-protocol-coap = { path = "../tpt-protocol-coap", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
-clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.24"
+clap = { workspace = true }
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 tokio-serial = { version = "5", optional = true }
 futures-util = "0.3"
-anyhow = "1"
-toml = "0.8"
+anyhow = { workspace = true }
+toml = { workspace = true }
 hex = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 socketcan = { version = "3", optional = true, features = ["tokio"] }
 
 [features]
+default = [
+    "modbus", "j1939", "isobus", "uds", "canopen", "doip-someip", "nmea", "mavlink",
+    "bacnet", "opcua", "dnp3", "ethercat", "sparkplugb", "ocpp", "ieee11073-sdc",
+    "hl7v2", "knx", "matter-thread", "coap",
+]
+# One feature per protocol. Disable `default` and list only the protocols you
+# need, e.g. `--no-default-features --features modbus`.
+modbus = ["dep:tpt-protocol-modbus"]
+j1939 = ["dep:tpt-protocol-j1939"]
+isobus = ["dep:tpt-protocol-isobus"]
+uds = ["dep:tpt-protocol-uds"]
+canopen = ["dep:tpt-protocol-canopen"]
+doip-someip = ["dep:tpt-protocol-doip-someip"]
+nmea = ["dep:tpt-protocol-nmea"]
+mavlink = ["dep:tpt-protocol-mavlink"]
+bacnet = ["dep:tpt-protocol-bacnet"]
+opcua = ["dep:tpt-protocol-opcua"]
+dnp3 = ["dep:tpt-protocol-dnp3"]
+ethercat = ["dep:tpt-protocol-ethercat"]
+sparkplugb = ["dep:tpt-protocol-sparkplugb"]
+ocpp = ["dep:tpt-protocol-ocpp"]
+ieee11073-sdc = ["dep:tpt-protocol-ieee11073-sdc"]
+hl7v2 = ["dep:tpt-protocol-hl7v2"]
+knx = ["dep:tpt-protocol-knx"]
+matter-thread = ["dep:tpt-protocol-matter-thread"]
+coap = ["dep:tpt-protocol-coap"]
 # Serial ports (Linux, macOS, Windows). Off by default: it needs an attached port to exercise.
 serial = ["dep:tokio-serial"]
 # SocketCAN (Linux only). Needs a CAN interface such as vcan0 to exercise.

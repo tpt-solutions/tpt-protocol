@@ -1,0 +1,54 @@
+[package]
+# Bindings are for other languages. They are not published as a Rust library.
+publish = false
+name = "tpt-protocol-bindings"
+version = "0.1.0"
+description = "C, WebAssembly and Python bindings that decode one frame to TUP JSON"
+keywords = ["tpt", "protocol", "bindings", "wasm", "python"]
+categories = ["api-bindings", "network-programming"]
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+# The library is named `tpt_protocol`, so the Python extension module is `tpt_protocol`
+# and the WebAssembly package exports the same name.
+[lib]
+name = "tpt_protocol"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+tpt-protocol-core = { workspace = true, features = ["std"] }
+tpt-protocol-tup = { workspace = true, features = ["std"] }
+tpt-protocol-modbus = { path = "../tpt-protocol-modbus" }
+tpt-protocol-j1939 = { path = "../tpt-protocol-j1939" }
+tpt-protocol-isobus = { path = "../tpt-protocol-isobus" }
+tpt-protocol-uds = { path = "../tpt-protocol-uds" }
+tpt-protocol-canopen = { path = "../tpt-protocol-canopen" }
+tpt-protocol-doip-someip = { path = "../tpt-protocol-doip-someip" }
+tpt-protocol-nmea = { path = "../tpt-protocol-nmea" }
+tpt-protocol-mavlink = { path = "../tpt-protocol-mavlink" }
+tpt-protocol-bacnet = { path = "../tpt-protocol-bacnet" }
+tpt-protocol-opcua = { path = "../tpt-protocol-opcua" }
+tpt-protocol-dnp3 = { path = "../tpt-protocol-dnp3" }
+tpt-protocol-ethercat = { path = "../tpt-protocol-ethercat" }
+tpt-protocol-sparkplugb = { path = "../tpt-protocol-sparkplugb" }
+tpt-protocol-ocpp = { path = "../tpt-protocol-ocpp" }
+tpt-protocol-ieee11073-sdc = { path = "../tpt-protocol-ieee11073-sdc" }
+tpt-protocol-hl7v2 = { path = "../tpt-protocol-hl7v2" }
+tpt-protocol-knx = { path = "../tpt-protocol-knx" }
+tpt-protocol-matter-thread = { path = "../tpt-protocol-matter-thread" }
+tpt-protocol-coap = { path = "../tpt-protocol-coap" }
+hex = { workspace = true }
+
+# Optional front ends. Build the C library with no features, WebAssembly with
+# `--features wasm`, and the Python module with `--features python`.
+# Pinned: wasm-bindgen needs the CLI and the library to be the exact same version.
+wasm-bindgen = { version = "=0.2.126", optional = true }
+pyo3 = { version = "0.30", features = ["extension-module"], optional = true }
+
+[features]
+wasm = ["dep:wasm-bindgen"]
+python = ["dep:pyo3"]

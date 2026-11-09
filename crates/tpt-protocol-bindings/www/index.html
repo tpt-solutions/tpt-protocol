@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TPT Protocol playground</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; }
+    h1 { font-size: 1.2rem; margin: 0 0 0.75rem; }
+    label { display: block; font-weight: 600; margin-top: 0.75rem; }
+    select, textarea, button { font: inherit; }
+    textarea { width: 100%; min-height: 4.5rem; box-sizing: border-box; font-family: ui-monospace, monospace; }
+    button { margin-top: 0.75rem; padding: 0.4rem 1rem; }
+    pre { background: #f4f4f4; padding: 0.75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+    @media (prefers-color-scheme: dark) { pre { background: #1d1f22; } }
+    #error { color: #c62828; min-height: 1.2rem; }
+  </style>
+</head>
+<body>
+  <h1>Paste a frame, see TUP</h1>
+  <p>Enter a frame as hex. It is decoded in your browser; nothing is sent anywhere.</p>
+
+  <label for="protocol">Protocol</label>
+  <select id="protocol"></select>
+
+  <label for="frame">Frame (hex, spaces optional)</label>
+  <textarea id="frame" spellcheck="false">01 06 00 01 00 0A 58 0D</textarea>
+
+  <button id="decode" type="button">Decode</button>
+  <div id="error" role="alert"></div>
+  <pre id="output"></pre>
+
+  <script type="module">
+    // The glue comes from `wasm-bindgen --target web` (or `wasm-pack build --target web`),
+    // which writes ./pkg. See README.md in this folder.
+    import init, { decode_hex, protocols } from './pkg/tpt_protocol.js';
+
+    const select = document.getElementById('protocol');
+    const frame = document.getElementById('frame');
+    const output = document.getElementById('output');
+    const error = document.getElementById('error');
+
+    await init();
+
+    for (const name of protocols()) {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      if (name === 'modbus') option.selected = true;
+      select.appendChild(option);
+    }
+
+    function run() {
+      error.textContent = '';
+      try {
+        const json = decode_hex(select.value, frame.value);
+        output.textContent = JSON.stringify(JSON.parse(json), null, 2);
+      } catch (e) {
+        output.textContent = '';
+        error.textContent = String(e);
+      }
+    }
+
+    document.getElementById('decode').addEventListener('click', run);
+    frame.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) run(); });
+    run();
+  </script>
+</body>
+</html>

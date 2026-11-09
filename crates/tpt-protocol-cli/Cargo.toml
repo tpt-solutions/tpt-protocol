@@ -19,10 +19,10 @@ path = "src/main.rs"
 [dependencies]
 tpt-protocol-tup = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = "0.24"
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
 futures-util = "0.3"
 ratatui = "0.29"
 crossterm = "0.29"
-anyhow = "1"
-clap = { version = "4", features = ["derive"] }
+anyhow = { workspace = true }
+clap = { workspace = true }
