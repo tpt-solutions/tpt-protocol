@@ -449,20 +449,16 @@ impl DataNormalizer for NmeaNormalizer {
         Ok(points)
     }
 
-    /// The first point of the sentence. A sentence with no decodable field
-    /// yields a point for the sentence itself, with value 0.
+    /// The first point of the sentence. A sentence with no decodable field is an
+    /// error: a point with value 0 would read as a measurement.
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        if let Some(first) = self.points(frame).into_iter().next() {
-            return Ok(first);
-        }
-        Ok(point(
-            &format!("nmea:{}", frame.talker),
-            &sentence_label(&frame.sentence),
-            "empty",
-            TupValue::Int(0),
-            Quality::Good,
-            frame.raw.as_bytes(),
-        ))
+        self.points(frame).into_iter().next().ok_or_else(|| {
+            Error::Normalize(format!(
+                "nmea {}{} has no decodable field",
+                frame.talker,
+                sentence_label(&frame.sentence)
+            ))
+        })
     }
 }
 
@@ -809,14 +805,11 @@ mod tests {
     fn normalize_roundtrip() {
         let parser = NmeaParser::new();
         let normalizer = NmeaNormalizer::new();
-        // A malformed position (an extra comma) decodes no field, so the
-        // normalizer falls back to a point for the sentence itself.
+        // A malformed position (an extra comma) decodes no field, so there is no
+        // measurement to report. That is an error, not a zero.
         let bytes = make_nmea("GP", "GGA", &["123519", "4807.038,N"]);
         let frame = parser.parse(&bytes).unwrap();
-        let dp = normalizer.normalize(&frame).unwrap();
-        assert_eq!(dp.source_protocol, SourceProtocol::Nmea);
-        assert_eq!(dp.device_id, "nmea:GP");
-        assert_eq!(dp.point_id, "GGA.empty");
+        assert!(normalizer.normalize(&frame).is_err());
     }
 
     #[test]
