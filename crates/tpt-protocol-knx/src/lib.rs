@@ -291,7 +291,12 @@ impl DataNormalizer for KnxNormalizer {
 
         let value = match &frame.dpt {
             DptValue::Short(v) => TupValue::Int(*v as i64),
-            DptValue::Data(d) if d.is_empty() => TupValue::Int(0),
+            // A telegram with no data octets carries no value; zero would read as one.
+            DptValue::Data(d) if d.is_empty() => {
+                return Err(Error::Normalize(format!(
+                    "knx telegram to {point_id} carries no data"
+                )))
+            }
             DptValue::Data(d) => TupValue::Bytes(d.clone()),
         };
 
