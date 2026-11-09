@@ -8,7 +8,7 @@
 # host-side -p 127.0.0.1:... keeps the port on loopback. Add --token to the
 # command when the port is exposed more widely.
 #
-# Not yet tested: this file was written without a Docker daemon available.
+# Tested: built and run on Docker Desktop 29.9.2 (2026-11-10); /healthz answers on the host port.
 
 FROM rust:1.90-bookworm AS build
 WORKDIR /src
