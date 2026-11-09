@@ -42,6 +42,10 @@ cargo run --bin tpt-protocol-daemon -- --port 9090 --simulate modbus
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay capture.bin --replay-format raw
 
+# The samples/ directory holds two Modbus RTU frames to try this with, e.g.
+# cargo run --bin tpt-protocol-daemon -- --simulate modbus --replay samples/modbus-write-single-register-1.hex
+# Their CRCs are checked by the bundled_replay_samples_decode test.
+
 # Require a token (as ?token= or Authorization: Bearer) and allow a dev-server origin
 cargo run --bin tpt-protocol-daemon -- --simulate modbus --token "$TOKEN" --allow-origin http://localhost:5173
 
