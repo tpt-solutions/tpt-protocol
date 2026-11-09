@@ -95,6 +95,24 @@ Unknown keys, a `min` above `max`, and an unknown protocol name are config
 errors, reported at startup. The stage runs between the devices and the
 clients, so the WebSocket API and `--record` both see mapped points.
 
+### Anomaly rules (`[[anomaly]]`)
+
+Stateful checks that mark a point `Uncertain` (its value is kept) when it looks
+replayed, arrives too fast, or jumps. Each rule matches by protocol, device and
+point, and needs at least one check:
+
+- `order = true`: a timestamp that does not advance past the series' last one
+  (a replay or a clock step).
+- `min_interval_ms = N`: two points of a series closer than N ms (a rate spike).
+- `max_step = X`: a numeric value that moves more than X from the last one (a
+  step spike).
+
+The checks run after `[[map]]`, so they see the point ids clients see. The table
+of tracked series is capped at 10,000, so many distinct point ids cannot grow it
+without bound. **Not done:** function-code rules. A TUP point does not carry the
+Modbus or other function code it came from, so they need frame metadata the
+plugins would have to pass on.
+
 ### Recording and detection
 
 - `--record FILE` appends every data point to `FILE` as NDJSON, one object per

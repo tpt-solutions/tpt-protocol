@@ -1,3 +1,4 @@
+mod anomaly;
 mod capture;
 mod detect;
 mod mapping;
@@ -132,6 +133,9 @@ struct Config {
     /// Declarative mapping rules: see `mapping.rs`.
     #[serde(default)]
     map: Vec<mapping::MapRule>,
+    /// Anomaly checks on the stream: see `anomaly.rs`.
+    #[serde(default)]
+    anomaly: Vec<anomaly::AnomalyRule>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -558,6 +562,11 @@ async fn main() -> Result<()> {
         rule.validate()
             .map_err(|e| anyhow!("config [[map]]: {e}"))?;
     }
+    for rule in &file_config.anomaly {
+        rule.validate()
+            .map_err(|e| anyhow!("config [[anomaly]]: {e}"))?;
+    }
+    let anomaly_rules = file_config.anomaly.clone();
     let map_rules = file_config.map.clone();
     let settings = resolve_settings(args.simulate, args.port, args.bind, file_config);
 
@@ -676,7 +685,12 @@ async fn main() -> Result<()> {
     // the [[map]] rules and forwards to `tx`, which the clients and the recorder read.
     let (tx, _) = broadcast::channel::<DataPoint>(1024);
     let (source_tx, _) = broadcast::channel::<DataPoint>(1024);
-    tokio::spawn(mapping::run(map_rules, source_tx.subscribe(), tx.clone()));
+    tokio::spawn(mapping::run(
+        map_rules,
+        anomaly_rules,
+        source_tx.subscribe(),
+        tx.clone(),
+    ));
     if let Some(path) = args.record.clone() {
         let record_tx = tx.clone();
         tokio::spawn(async move {
@@ -890,6 +904,7 @@ mod tests {
             port: Some(7000),
             bind: Some("0.0.0.0".into()),
             map: Vec::new(),
+            anomaly: Vec::new(),
         };
         let s = resolve_settings(Some("modbus".into()), Some(9999), None, file);
         assert_eq!(

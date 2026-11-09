@@ -115,17 +115,25 @@ pub fn apply(rules: &[MapRule], dp: DataPoint) -> DataPoint {
 }
 
 /// The mapping stage between the devices and the clients: every point from
-/// `rx` is mapped and sent on `tx`, until either side closes.
+/// `rx` is mapped, checked against the anomaly rules, and sent on `tx`, until
+/// either side closes. The anomaly check runs after mapping, so it sees the
+/// point ids the clients see.
 pub async fn run(
     rules: Vec<MapRule>,
+    anomaly_rules: Vec<crate::anomaly::AnomalyRule>,
     mut rx: tokio::sync::broadcast::Receiver<DataPoint>,
     tx: tokio::sync::broadcast::Sender<DataPoint>,
 ) {
     use tokio::sync::broadcast::error::RecvError;
+    let mut detector = crate::anomaly::Detector::new(anomaly_rules);
     loop {
         match rx.recv().await {
             Ok(dp) => {
-                let _ = tx.send(apply(&rules, dp));
+                let mut dp = apply(&rules, dp);
+                if let Some(reason) = detector.check(&mut dp) {
+                    tracing::debug!("{} {}: {reason}", dp.device_id, dp.point_id);
+                }
+                let _ = tx.send(dp);
             }
             Err(RecvError::Lagged(n)) => {
                 tracing::warn!("mapping stage fell behind and dropped {n} points");
