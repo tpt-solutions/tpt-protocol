@@ -20,7 +20,7 @@ path = "src/main.rs"
 tpt-protocol-tup = { workspace = true, features = ["std"] }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = "0.24"
 futures-util = "0.3"
 ratatui = "0.29"
 crossterm = "0.29"

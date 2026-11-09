@@ -304,7 +304,7 @@ Add `tests/vectors/` per crate from real captures/vendor vectors so tests stop b
 - [ ] `tracing` + `RUST_LOG`, metrics (clients, lagged/dropped), `/healthz`, `--interval`; feature-gate protocols in the daemon
 - [ ] CLI: restore terminal on every exit path, filter `key.kind == Press` (double scroll on Windows), `VecDeque` + bounded channel, date/timezone in timestamps, auto-follow, pong handling — **partial: terminal restore on every path (the loop is in `run_ui`), Press-only key handling, `VecDeque` buffer and a bounded channel (256) with backpressure are done. Still open: date/timezone in timestamps, auto-follow, pong handling.**
 - [ ] ui-web: CSP hard-codes `ws://127.0.0.1:9080` vs `TPT_DAEMON_URL`, remove production devtools permission, reconnect timers stack, O(n²) slice, no teardown; ui-embedded: `unwrap()` on `spawn_local`, show connection status
-- [ ] Drop unused `native-tls` from cli/ui crates; build and lint ui-web/ui-embedded in CI
+- [x] Drop unused `native-tls` from cli/ui crates (done: the clients only use `ws://` to the local daemon; cli, ui-embedded and ui-web still build). Still open: build and lint ui-web/ui-embedded in CI
 - [ ] Daemon tests: `datapoint_to_json`, `is_loopback_bind`, config precedence, replay hex/binary, end-to-end WS with good/bad Origin; CLI tests for `parse_data_points`, `format_timestamp`, scrolling — **partial: handshake authorization tests cover loopback Host, foreign Origin, DNS rebinding, non-loopback bind and the token. Config precedence and hex replay were already covered. Still open: an end-to-end WebSocket test with good and bad Origin, and binary `raw` replay.**
 
 ## Phase 13 — Adoption Kit

@@ -28,6 +28,6 @@ tauri = { version = "2", features = [] }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = "0.24"
 futures-util = "0.3"
 tpt-protocol-tup = { workspace = true, features = ["std"] }
