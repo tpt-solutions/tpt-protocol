@@ -1072,4 +1072,58 @@ mod fuzz {
             let _ = parser.parse(&bytes);
         }
     }
+
+    /// A sentence in the shape a receiver sends: `$TTSSS,fields*HH`. The checksum is
+    /// the XOR of the body, correct most of the time and off by one otherwise, so
+    /// both the accept and the reject paths run.
+    fn sentence() -> impl Strategy<Value = Vec<u8>> {
+        let talker = proptest::sample::select(alloc::vec![
+            "GP", "GN", "GL", "GA", "BD", "SD", "HE", "II", "XX"
+        ]);
+        let kind = proptest::sample::select(alloc::vec![
+            "GGA", "RMC", "GLL", "VTG", "GSA", "GSV", "HDT", "ZDA", "DBT", "VHW", "MWV", "HDM",
+        ]);
+        (
+            talker,
+            kind,
+            proptest::collection::vec("[-0-9A-Za-z.]{0,10}", 0..16),
+            any::<bool>(),
+        )
+            .prop_map(|(talker, kind, fields, good)| {
+                let body = format!("{talker}{kind},{}", fields.join(","));
+                let xor = body.bytes().fold(0u8, |acc, b| acc ^ b);
+                let checksum = if good { xor } else { xor.wrapping_add(1) };
+                format!("${body}*{checksum:02X}\r\n").into_bytes()
+            })
+    }
+
+    /// One random byte overwrite or one truncation applied to a valid-looking sentence.
+    fn mutated_sentence() -> impl Strategy<Value = Vec<u8>> {
+        (sentence(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_sentences_never_panic(bytes in mutated_sentence()) {
+            let parser = NmeaParser::new();
+            if let Ok(frame) = parser.parse(&bytes) {
+                // Whatever parses must also normalize without panicking.
+                let _ = NmeaNormalizer::new().points(&frame);
+                let _ = NmeaNormalizer::new().normalize_all(&frame);
+            }
+        }
+    }
 }

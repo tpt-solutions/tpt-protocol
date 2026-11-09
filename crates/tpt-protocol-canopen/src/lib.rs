@@ -416,6 +416,55 @@ mod fuzz {
     use super::*;
     use proptest::prelude::*;
 
+    /// A CANopen frame: a two-byte big-endian COB-ID, then up to 8 payload bytes. The
+    /// COB-ID is a real function-code base (NMT, SYNC, EMCY, PDO, SDO, heartbeat) plus
+    /// a node id. Some payloads run past 8 bytes, so the length check is exercised.
+    fn cob_frame() -> impl Strategy<Value = Vec<u8>> {
+        let base = proptest::sample::select(alloc::vec![
+            0x000u16, 0x080, 0x180, 0x200, 0x280, 0x300, 0x380, 0x400, 0x480, 0x500, 0x580, 0x600,
+            0x700,
+        ]);
+        (
+            base,
+            0u16..=127,
+            proptest::collection::vec(any::<u8>(), 0..12),
+        )
+            .prop_map(|(base, node, payload)| {
+                let cob_id = base | node;
+                let mut out = cob_id.to_be_bytes().to_vec();
+                out.extend_from_slice(&payload);
+                out
+            })
+    }
+
+    /// One random byte overwrite, one truncation, or one extra byte appended.
+    fn mutated_cob_frame() -> impl Strategy<Value = Vec<u8>> {
+        (cob_frame(), any::<usize>(), any::<u8>(), 0u8..3).prop_map(
+            |(mut bytes, idx, val, kind)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                match kind {
+                    0 => bytes.truncate(i),
+                    1 => bytes[i] = val,
+                    _ => bytes.push(val),
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_cob_frames_never_panic(bytes in mutated_cob_frame()) {
+            let parser = CanOpenParser::new();
+            if let Ok(frame) = parser.parse(&bytes) {
+                let _ = CanOpenNormalizer::new().normalize_all(&frame);
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {

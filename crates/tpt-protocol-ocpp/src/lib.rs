@@ -680,4 +680,65 @@ mod fuzz {
             let _ = OcppParser.parse(&bytes);
         }
     }
+
+    /// An OCPP-J message array: CALL `[2,id,action,payload]`, CALLRESULT `[3,id,payload]`
+    /// or CALLERROR `[4,id,code,description,details]`. Ids run from empty to past the
+    /// 36-character limit, and payloads are nested objects with escapes in strings.
+    fn ocpp_message() -> impl Strategy<Value = Vec<u8>> {
+        let id = "[A-Za-z0-9\\-\"\\\\]{0,40}";
+        let action = proptest::sample::select(alloc::vec![
+            "BootNotification",
+            "Heartbeat",
+            "StatusNotification",
+            "Authorize",
+            "Nope",
+        ]);
+        let payload = "[a-zA-Z0-9 ]{0,8}".prop_map(|s| {
+            alloc::format!(
+                r#"{{"vendor":"{}","n":[1,2.5,true,null]}}"#,
+                s.replace('"', "")
+            )
+        });
+        (0u8..3, id, action, payload, 0u8..3).prop_map(|(kind, id, action, payload, skew)| {
+            let id = id.replace('\\', "");
+            match kind {
+                0 => alloc::format!(r#"[2,"{id}","{action}",{payload}]"#),
+                1 => alloc::format!(r#"[3,"{id}",{payload}]"#),
+                _ => alloc::format!(r#"[4,"{id}","GenericError","x",{payload}]"#),
+            }
+            .into_bytes()
+            .into_iter()
+            // A skewed copy drops or repeats the closing bracket, so the array
+            // length checks run too.
+            .chain(core::iter::repeat_n(b']', skew as usize))
+            .collect()
+        })
+    }
+
+    /// One random byte overwrite or one truncation applied to a valid-looking message.
+    fn mutated_ocpp() -> impl Strategy<Value = Vec<u8>> {
+        (ocpp_message(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_ocpp_never_panics(bytes in mutated_ocpp()) {
+            if let Ok(frame) = OcppParser.parse(&bytes) {
+                let _ = OcppNormalizer.normalize_all(&frame);
+            }
+        }
+    }
 }

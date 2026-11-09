@@ -436,6 +436,60 @@ mod fuzz {
     use super::*;
     use proptest::prelude::*;
 
+    /// A J1939 CAN frame: the 29-bit identifier (priority, EDP, DP, PF, PS, source
+    /// address) as four big-endian bytes, then up to 10 payload bytes. PF is drawn
+    /// across the PDU1 (below 240) and PDU2 (240 and up) ranges, where the PGN rules
+    /// differ, and some payloads run past 8 bytes to reach the length check.
+    fn j1939_frame() -> impl Strategy<Value = Vec<u8>> {
+        (
+            0u32..8,
+            0u32..2,
+            0u32..2,
+            prop_oneof![0u32..240, 240u32..=255],
+            any::<u8>(),
+            any::<u8>(),
+            proptest::collection::vec(any::<u8>(), 0..11),
+        )
+            .prop_map(|(priority, edp, dp, pf, ps, sa, payload)| {
+                let id = (priority << 26)
+                    | (edp << 25)
+                    | (dp << 24)
+                    | (pf << 16)
+                    | ((ps as u32) << 8)
+                    | sa as u32;
+                let mut out = id.to_be_bytes().to_vec();
+                out.extend_from_slice(&payload);
+                out
+            })
+    }
+
+    /// One random byte overwrite, one truncation, or one extra byte appended.
+    fn mutated_j1939_frame() -> impl Strategy<Value = Vec<u8>> {
+        (j1939_frame(), any::<usize>(), any::<u8>(), 0u8..3).prop_map(
+            |(mut bytes, idx, val, kind)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                match kind {
+                    0 => bytes.truncate(i),
+                    1 => bytes[i] = val,
+                    _ => bytes.push(val),
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_j1939_frames_never_panic(bytes in mutated_j1939_frame()) {
+            if let Ok(frame) = J1939Parser::new().parse(&bytes) {
+                let _ = J1939Normalizer::new().normalize_all(&frame);
+            }
+        }
+    }
+
     proptest! {
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {

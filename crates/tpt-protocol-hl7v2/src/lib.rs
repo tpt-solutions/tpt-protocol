@@ -433,4 +433,59 @@ mod fuzz {
             let _ = parser.parse(&bytes);
         }
     }
+
+    /// A message shaped like an HL7 v2 interface feed: an MSH header, then segments
+    /// of common types, each field from a small alphabet that includes the component
+    /// and repeat separators. Segments end in carriage returns.
+    fn message() -> impl Strategy<Value = Vec<u8>> {
+        let segment_name =
+            proptest::sample::select(alloc::vec!["EVN", "PID", "PV1", "OBR", "OBX", "NTE", "ZZZ"]);
+        let field = "[A-Za-z0-9 ^~&.\\-]{0,12}";
+        (
+            proptest::collection::vec(
+                (segment_name, proptest::collection::vec(field, 0..10)),
+                0..6,
+            ),
+            proptest::collection::vec(field, 0..12),
+        )
+            .prop_map(|(segments, msh_fields)| {
+                let mut out = String::from("MSH|^~\\&|");
+                out.push_str(&msh_fields.join("|"));
+                out.push('\r');
+                for (name, fields) in segments {
+                    out.push_str(name);
+                    out.push('|');
+                    out.push_str(&fields.join("|"));
+                    out.push('\r');
+                }
+                out.into_bytes()
+            })
+    }
+
+    /// One random byte overwrite, one truncation, or one inserted non-ASCII byte.
+    /// The last two reach the UTF-8 and character-boundary paths.
+    fn mutated_message() -> impl Strategy<Value = Vec<u8>> {
+        (message(), any::<usize>(), any::<u8>(), 0u8..3).prop_map(|(mut bytes, idx, val, kind)| {
+            if bytes.is_empty() {
+                return bytes;
+            }
+            let i = idx % bytes.len();
+            match kind {
+                0 => bytes.truncate(i),
+                1 => bytes[i] = val,
+                _ => bytes.insert(i, 0xC3 | (val & 0x01)),
+            }
+            bytes
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn structured_messages_never_panic(bytes in mutated_message()) {
+            let parser = Hl7Parser;
+            if let Ok(frame) = parser.parse(&bytes) {
+                let _ = Hl7Normalizer.normalize_all(&frame);
+            }
+        }
+    }
 }
