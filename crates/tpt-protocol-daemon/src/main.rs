@@ -2,6 +2,7 @@ mod anomaly;
 mod capture;
 mod detect;
 mod mapping;
+mod pcap;
 mod plugins;
 mod record;
 mod transport;
@@ -66,9 +67,14 @@ struct Args {
     #[arg(long)]
     replay: Option<String>,
     /// How `--replay` interprets the file: `hex` (ASCII hex text), `raw` (binary),
-    /// or `candump` (a `candump -L` CAN capture, decoded frame by frame).
-    #[arg(long, default_value = "hex", value_parser = ["hex", "raw", "candump"])]
+    /// `candump` (a `candump -L` CAN capture, decoded frame by frame), or `pcap`
+    /// (a pcap or pcapng capture; its TCP and UDP payloads are replayed in order).
+    #[arg(long, default_value = "hex", value_parser = ["hex", "raw", "candump", "pcap"])]
     replay_format: String,
+    /// With `--replay-format pcap`, keep only TCP or UDP segments on this port (source or
+    /// destination). Without it, every conversation in the capture is replayed together.
+    #[arg(long = "pcap-port")]
+    pcap_port: Option<u16>,
     /// Rank the protocols by how well they decode a capture (hex or raw) and exit.
     #[arg(long)]
     detect: Option<String>,
@@ -326,8 +332,42 @@ fn replay_bytes(format: &str, raw: Vec<u8>) -> Result<Vec<u8>> {
     match format {
         "hex" => decode_hex_file(&raw),
         "raw" => Ok(raw),
-        other => bail!("unknown --replay-format '{other}' (expected hex or raw)"),
+        "pcap" => bail!("a pcap capture holds several messages; it is replayed with --replay"),
+        other => bail!("unknown --replay-format '{other}' (expected hex, raw, candump or pcap)"),
     }
+}
+
+/// Replays the TCP and UDP payloads of a pcap or pcapng capture through `protocol`,
+/// in capture order. The payloads are joined as one stream, so a frame split across
+/// packets is reassembled. A stream that stops parsing is reset, as on a live link.
+fn replay_pcap(
+    protocol: &str,
+    raw: &[u8],
+    port: Option<u16>,
+) -> Result<Vec<tpt_protocol_tup::DataPoint>> {
+    let payloads = pcap::payloads(raw, port).map_err(|e| anyhow!("pcap: {e}"))?;
+    if payloads.is_empty() {
+        bail!("the capture holds no TCP or UDP payload to replay (check --pcap-port)");
+    }
+    let mut buf = Vec::new();
+    let mut out = Vec::new();
+    for payload in payloads {
+        buf.extend_from_slice(&payload);
+        if let Err(e) = transport::drain(protocol, &mut buf, &mut out) {
+            tracing::warn!(
+                "pcap: {protocol}: {e}; discarding {} buffered bytes",
+                buf.len()
+            );
+            buf.clear();
+        }
+    }
+    if !buf.is_empty() {
+        tracing::warn!(
+            "pcap: {} trailing bytes are not a complete frame",
+            buf.len()
+        );
+    }
+    Ok(out)
 }
 
 /// Decodes a `candump -L` capture with the CAN protocol `protocol`. Each frame is
@@ -595,6 +635,10 @@ async fn main() -> Result<()> {
         let raw = tokio::fs::read(replay_path).await?;
         if args.replay_format == "candump" {
             for dp in replay_candump(protocol, &raw)? {
+                println!("{}", json::to_json_string(&dp)?);
+            }
+        } else if args.replay_format == "pcap" {
+            for dp in replay_pcap(protocol, &raw, args.pcap_port)? {
                 println!("{}", json::to_json_string(&dp)?);
             }
         } else {
@@ -1006,6 +1050,32 @@ mod tests {
         // Every sample file in the directory is listed above, so none is forgotten.
         let on_disk = std::fs::read_dir(dir).unwrap().count();
         assert_eq!(on_disk, SAMPLES.len(), "a sample file is not in SAMPLES");
+    }
+
+    #[test]
+    fn pcap_capture_replays_a_split_modbus_request() {
+        use crate::pcap::tests::{classic, tcp_packet};
+        // A Modbus TCP write-single-register request, split across two packets, with
+        // an unrelated conversation in between.
+        let request: [u8; 12] = [
+            0x00, 0x01, 0x00, 0x00, 0x00, 0x06, 0x01, 0x06, 0x00, 0x01, 0x00, 0x0A,
+        ];
+        let file = classic(&[
+            tcp_packet(40000, 502, &request[..5]),
+            tcp_packet(40001, 9999, b"not modbus"),
+            tcp_packet(40000, 502, &request[5..]),
+        ]);
+        let points = replay_pcap("modbus", &file, Some(502)).unwrap();
+        assert_eq!(points.len(), 1, "one write, reassembled from two packets");
+        assert_eq!(points[0].value, tpt_protocol_tup::TupValue::Int(10));
+    }
+
+    #[test]
+    fn pcap_replay_with_no_matching_payload_is_an_error() {
+        use crate::pcap::tests::{classic, tcp_packet};
+        let file = classic(&[tcp_packet(40001, 9999, b"x")]);
+        assert!(replay_pcap("modbus", &file, Some(502)).is_err());
+        assert!(replay_bytes("pcap", Vec::new()).is_err());
     }
 
     #[test]

@@ -45,6 +45,9 @@ cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay capture.bin --
 # A candump -L capture of CAN frames, decoded frame by frame through a CAN protocol
 cargo run --bin tpt-protocol-daemon -- --simulate canopen --replay can.log --replay-format candump
 
+# A pcap or pcapng capture: the TCP/UDP payloads on port 502, replayed in order
+cargo run --bin tpt-protocol-daemon -- --simulate modbus --replay trace.pcapng --replay-format pcap --pcap-port 502
+
 # Every bundled sample under samples/ replays to a data point (the test checks this)
 cargo run --bin tpt-protocol-daemon -- --simulate modbus --replay samples/modbus-write-single-register-1.hex
 
@@ -295,8 +298,12 @@ stream and print each data point. The daemon's default simulate target is
   feature (on by default). A build without a protocol feature does not compile.
 - **Mapping is point-by-point.** `[[map]]` rules cannot compute across points,
   such as sums or derived quantities. They also cannot match on a value.
-- **Capture import is CAN-only.** `--replay-format candump` reads CAN captures.
-  pcap and pcapng are not read, and neither is any other network capture.
+- **Capture import covers CAN and pcap.** `--replay-format candump` reads CAN
+  captures. `--replay-format pcap` reads classic pcap and pcapng, over Ethernet or
+  raw IP, IPv4 only. It does not reassemble TCP (segments are taken in capture
+  order, with no gap filling), does not reorder, and skips fragments and IPv6.
+  Tested with synthetic captures; no capture from a real network has been replayed.
+  MCAP and Parquet export are not done.
 - **Sinks are limited to the WebSocket and NDJSON files.** There is no MQTT,
   OPC UA server, InfluxDB or OpenTelemetry output.
 - **No authentication.** The WebSocket API is unauthenticated and loopback by
