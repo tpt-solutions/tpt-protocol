@@ -84,6 +84,12 @@ pub enum SentenceType {
     Dbt,
     Vhw,
     Mwv,
+    Gll,
+    Vtg,
+    Gsa,
+    Gsv,
+    Hdt,
+    Zda,
     Unknown([u8; 3]),
 }
 
@@ -101,6 +107,12 @@ impl SentenceType {
             (b'D', b'B', b'T') => Self::Dbt,
             (b'V', b'H', b'W') => Self::Vhw,
             (b'M', b'W', b'V') => Self::Mwv,
+            (b'G', b'L', b'L') => Self::Gll,
+            (b'V', b'T', b'G') => Self::Vtg,
+            (b'G', b'S', b'A') => Self::Gsa,
+            (b'G', b'S', b'V') => Self::Gsv,
+            (b'H', b'D', b'T') => Self::Hdt,
+            (b'Z', b'D', b'A') => Self::Zda,
             (a, b, c) => Self::Unknown([a, b, c]),
         }
     }
@@ -112,6 +124,12 @@ impl SentenceType {
             Self::Dbt => "DBT",
             Self::Vhw => "VHW",
             Self::Mwv => "MWV",
+            Self::Gll => "GLL",
+            Self::Vtg => "VTG",
+            Self::Gsa => "GSA",
+            Self::Gsv => "GSV",
+            Self::Hdt => "HDT",
+            Self::Zda => "ZDA",
             Self::Unknown(_) => "???",
         }
     }
@@ -329,8 +347,8 @@ fn point(
 }
 
 /// Normalizes NMEA sentences into TUP DataPoints. Common sentences map to
-/// their real fields: GGA, RMC, DBT, VHW and MWV. Other sentences keep their
-/// first field.
+/// their real fields: GGA, RMC, GLL, DBT, VHW, VTG, HDT, MWV, GSA, GSV and ZDA.
+/// Other sentences keep their first field.
 #[derive(Clone, Debug, Default)]
 pub struct NmeaNormalizer;
 
@@ -421,6 +439,88 @@ impl NmeaNormalizer {
                         TupValue::Float(v),
                         Quality::Good,
                     );
+                }
+            }
+            SentenceType::Gll => {
+                // Fields: lat, N/S, lon, E/W, UTC time, status (A = valid, V = invalid).
+                let q = if f(5) == Some("A") {
+                    Quality::Good
+                } else {
+                    Quality::Bad
+                };
+                if let (Some(lat), Some(lon)) = (
+                    f(0).zip(f(1)).and_then(|(v, h)| coordinate(v, h, 2)),
+                    f(2).zip(f(3)).and_then(|(v, h)| coordinate(v, h, 3)),
+                ) {
+                    push("latitude", TupValue::Float(lat), q);
+                    push("longitude", TupValue::Float(lon), q);
+                }
+            }
+            SentenceType::Vtg => {
+                // Fields: true course, T, magnetic course, M, knots, N, km/h, K.
+                if let Some(v) = num(0) {
+                    push("course_true_deg", TupValue::Float(v), Quality::Good);
+                }
+                if let Some(v) = num(4) {
+                    push("speed_knots", TupValue::Float(v), Quality::Good);
+                }
+                if let Some(v) = num(6) {
+                    push("speed_kmh", TupValue::Float(v), Quality::Good);
+                }
+            }
+            SentenceType::Gsa => {
+                // Fields: mode, fix type (1 = no fix, 2 = 2D, 3 = 3D), 12 satellite ids,
+                // PDOP, HDOP, VDOP. A sentence without a fix reports its DOPs as Bad.
+                if let Some(fix) = f(1).and_then(|s| s.parse::<i64>().ok()) {
+                    push("fix_type", TupValue::Int(fix), Quality::Good);
+                    let q = if fix >= 2 {
+                        Quality::Good
+                    } else {
+                        Quality::Bad
+                    };
+                    if let Some(v) = num(14) {
+                        push("pdop", TupValue::Float(v), q);
+                    }
+                    if let Some(v) = num(15) {
+                        push("hdop", TupValue::Float(v), q);
+                    }
+                    if let Some(v) = num(16) {
+                        push("vdop", TupValue::Float(v), q);
+                    }
+                }
+            }
+            SentenceType::Gsv => {
+                // Fields: total messages, this message's number, satellites in view.
+                // The per-satellite groups are not decoded.
+                if let Some(n) = f(2).and_then(|s| s.parse::<i64>().ok()) {
+                    push("satellites_in_view", TupValue::Int(n), Quality::Good);
+                }
+            }
+            SentenceType::Hdt => {
+                if let Some(v) = num(0) {
+                    push("heading_true_deg", TupValue::Float(v), Quality::Good);
+                }
+            }
+            SentenceType::Zda => {
+                // Fields: hhmmss.ss, day, month, year. The time becomes seconds of the day.
+                if let Some(t) = f(0) {
+                    let seconds = t
+                        .get(..2)
+                        .and_then(|h| h.parse::<f64>().ok())
+                        .zip(t.get(2..4).and_then(|m| m.parse::<f64>().ok()))
+                        .zip(t.get(4..).and_then(|s| s.parse::<f64>().ok()));
+                    if let Some(((h, m), s)) = seconds {
+                        push(
+                            "utc_seconds_of_day",
+                            TupValue::Float(h * 3600.0 + m * 60.0 + s),
+                            Quality::Good,
+                        );
+                    }
+                }
+                for (i, name) in [(1, "day"), (2, "month"), (3, "year")] {
+                    if let Some(n) = f(i).and_then(|s| s.parse::<i64>().ok()) {
+                        push(name, TupValue::Int(n), Quality::Good);
+                    }
                 }
             }
             _ => {
@@ -537,6 +637,119 @@ mod tests {
         let frame = parser.parse(&bytes).unwrap();
         assert_eq!(frame.talker, Talker::Sd);
         assert_eq!(frame.sentence, SentenceType::Dbt);
+    }
+
+    /// Decodes one sentence built from `fields` into its named points.
+    fn decoded(sentence: &str, fields: &[&str]) -> Vec<(String, TupValue, Quality)> {
+        let frame = NmeaParser::new()
+            .parse(&make_nmea("GP", sentence, fields))
+            .unwrap();
+        NmeaNormalizer::new()
+            .points(&frame)
+            .into_iter()
+            .map(|dp| (dp.point_id, dp.value, dp.quality))
+            .collect()
+    }
+
+    fn value_of(points: &[(String, TupValue, Quality)], name: &str) -> TupValue {
+        points
+            .iter()
+            .find(|(id, _, _)| id.rsplit('.').next() == Some(name))
+            .unwrap_or_else(|| panic!("no point {name} in {points:?}"))
+            .1
+            .clone()
+    }
+
+    #[test]
+    fn gll_position_and_validity() {
+        let points = decoded(
+            "GLL",
+            &["4807.038", "N", "01131.000", "E", "123519", "A", "A"],
+        );
+        let lat = match value_of(&points, "latitude") {
+            TupValue::Float(v) => v,
+            other => panic!("latitude is {other:?}"),
+        };
+        assert!((lat - 48.1173).abs() < 1e-4, "lat {lat}");
+        assert!(points.iter().all(|(_, _, q)| *q == Quality::Good));
+
+        let void = decoded(
+            "GLL",
+            &["4807.038", "N", "01131.000", "E", "123519", "V", "N"],
+        );
+        assert!(void.iter().all(|(_, _, q)| *q == Quality::Bad));
+    }
+
+    #[test]
+    fn vtg_speed_and_course() {
+        let points = decoded(
+            "VTG",
+            &["54.7", "T", "34.4", "M", "5.5", "N", "10.2", "K", "A"],
+        );
+        assert_eq!(value_of(&points, "course_true_deg"), TupValue::Float(54.7));
+        assert_eq!(value_of(&points, "speed_knots"), TupValue::Float(5.5));
+        assert_eq!(value_of(&points, "speed_kmh"), TupValue::Float(10.2));
+    }
+
+    #[test]
+    fn gsa_fix_type_and_dops() {
+        // Mode A, 3D fix, twelve satellite ids (two filled), then PDOP, HDOP, VDOP.
+        let fields = [
+            "A", "3", "04", "05", "", "", "", "", "", "", "", "", "", "", "2.5", "1.3", "2.1",
+        ];
+        let points = decoded("GSA", &fields);
+        assert_eq!(value_of(&points, "fix_type"), TupValue::Int(3));
+        assert_eq!(value_of(&points, "pdop"), TupValue::Float(2.5));
+        assert_eq!(value_of(&points, "hdop"), TupValue::Float(1.3));
+        assert_eq!(value_of(&points, "vdop"), TupValue::Float(2.1));
+
+        // With no fix the DOPs are reported as Bad, not trusted.
+        let mut no_fix = fields;
+        no_fix[1] = "1";
+        let points = decoded("GSA", &no_fix);
+        assert!(points
+            .iter()
+            .filter(|(id, _, _)| !id.ends_with("fix_type"))
+            .all(|(_, _, q)| *q == Quality::Bad));
+    }
+
+    #[test]
+    fn gsv_counts_satellites_in_view() {
+        let points = decoded(
+            "GSV",
+            &["3", "1", "11", "03", "03", "111", "00", "04", "15", "15"],
+        );
+        assert_eq!(value_of(&points, "satellites_in_view"), TupValue::Int(11));
+    }
+
+    #[test]
+    fn hdt_heading() {
+        let points = decoded("HDT", &["274.07", "T"]);
+        assert_eq!(
+            value_of(&points, "heading_true_deg"),
+            TupValue::Float(274.07)
+        );
+    }
+
+    #[test]
+    fn zda_time_of_day_and_date() {
+        let points = decoded("ZDA", &["102325.50", "09", "12", "2023", "00", "00"]);
+        // 10:23:25.5 is 37405.5 seconds into the day.
+        assert_eq!(
+            value_of(&points, "utc_seconds_of_day"),
+            TupValue::Float(37405.5)
+        );
+        assert_eq!(value_of(&points, "day"), TupValue::Int(9));
+        assert_eq!(value_of(&points, "month"), TupValue::Int(12));
+        assert_eq!(value_of(&points, "year"), TupValue::Int(2023));
+    }
+
+    #[test]
+    fn new_sentences_with_no_decodable_field_are_errors() {
+        let frame = NmeaParser::new()
+            .parse(&make_nmea("GP", "HDT", &["", "T"]))
+            .unwrap();
+        assert!(NmeaNormalizer::new().normalize(&frame).is_err());
     }
 
     #[test]
@@ -762,10 +975,11 @@ mod tests {
 
     #[test]
     fn unknown_sentence_keeps_the_first_field() {
-        let bytes = make_nmea("GP", "ZDA", &["123519", "01", "01", "2024"]);
+        // ZPA is not a sentence this crate decodes, so it keeps the first field.
+        let bytes = make_nmea("GP", "ZPA", &["123519", "01", "01", "2024"]);
         let frame = NmeaParser::new().parse(&bytes).unwrap();
         let dp = NmeaNormalizer::new().normalize(&frame).unwrap();
-        assert_eq!(dp.point_id, "ZDA.field0");
+        assert_eq!(dp.point_id, "ZPA.field0");
     }
 
     #[test]
