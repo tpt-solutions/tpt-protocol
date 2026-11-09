@@ -5,6 +5,9 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Weekly run so new RustSec advisories surface without a push.
+  schedule:
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,14 +30,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+
+  telos:
+    # Formal verification of the Modbus state machines (QF_LRA, no external solver).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p tpt-protocol-telos --features verify
 
   no_std:
     runs-on: ubuntu-latest
@@ -43,17 +66,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv6m-none-eabi
-      - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded --exclude tpt-protocol-telos --target thumbv6m-none-eabi
+      - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-telos --target thumbv6m-none-eabi
 
   msrv:
-    # Pinned to the workspace rust-version. The ui-* apps need Rust 1.90 and
-    # are excluded here; they declare their own rust-version.
+    # Pinned to the workspace rust-version. The ui-* apps are not workspace
+    # members (they need Rust 1.90 and are built standalone).
     name: MSRV (1.81)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@1.81
-      - run: cargo check --workspace --exclude tpt-protocol-ui-web --exclude tpt-protocol-ui-embedded
+      - run: cargo check --workspace
 
   cargo-deny:
     runs-on: ubuntu-latest
@@ -62,3 +85,32 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+
+  ui-embedded:
+    # Standalone crate (not a workspace member). Built on Windows, where the Slint
+    # toolchain is known to work without extra system packages.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crates/tpt-protocol-ui-embedded
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --all-targets -- -D warnings
+
+  ui-web:
+    # Standalone SvelteKit app; the Tauri shell is built separately.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: crates/tpt-protocol-ui-web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx svelte-check --tsconfig ./tsconfig.json
+      - run: npm run build

@@ -1,6 +1,6 @@
 # tpt-protocol-telos
 
-**Formal verification of [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) critical state machines using [`tpt-telos`](https://crates.io/crates/tpt-telos).**
+**Formal verification of [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) critical state machines using the `tpt-telos` toolchain (crates `tpt-telos-parser`, `tpt-telos-ir`, `tpt-telos-verifier`, see [crates.io](https://crates.io/crates/tpt-telos-verifier)).**
 
 The protocol crates must uphold safety properties even on malformed, truncated,
 or adversarial input — most importantly, they must never panic or read out of

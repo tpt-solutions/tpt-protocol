@@ -4,3 +4,6 @@ fuzz/corpus
 fuzz/artifacts
 .git
 **/*.log
+**/node_modules
+crates/tpt-protocol-ui-web/.svelte-kit
+crates/tpt-protocol-ui-embedded/target

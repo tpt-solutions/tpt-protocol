@@ -4,24 +4,36 @@
 [advisories]
 version = 2
 yanked = "warn"
-ignore = []
+ignore = [
+    # Unmaintained, not a vulnerability. Reached only via ratatui 0.29 in
+    # tpt-protocol-cli (a proc-macro helper). Clears when ratatui moves to
+    # 0.30+, which needs Rust 1.88 (workspace MSRV is 1.81).
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro via ratatui 0.29 in the CLI; no fix below Rust 1.88" },
+    # Build-time only. quick-xml 0.39.4 is pinned exactly by mavlink-bindgen 0.17.1,
+    # a [build-dependency] of mavlink. It parses the MAVLink XML definitions we
+    # compile in, never attacker-controlled input at runtime. Clears with a mavlink
+    # release that bumps quick-xml (mavlink 0.21 needs Rust 1.88).
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; build-time only via mavlink-bindgen, trusted XML input" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml memory exhaustion; build-time only via mavlink-bindgen, trusted XML input" },
+]
 
 [licenses]
-# All workspace crates are MIT OR Apache-2.0. The allow-list also permits the
-# permissive licenses of transitive dependencies pulled in by dev/build tooling.
+confidence-threshold = 0.9
+# All workspace crates are MIT OR Apache-2.0. The allow-list covers only the
+# permissive licenses actually present in the root dependency graph. Add a
+# license here only when cargo-deny reports it as rejected.
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
-    "Unicode-DFS-2016",
+    "BSL-1.0",
+    "BlueOak-1.0.0",
+    "Unicode-3.0",
     "Zlib",
-    "CC0-1.0",
     "MPL-2.0",
 ]
-confidence-threshold = 0.9
 
 [bans]
 multiple-versions = "warn"

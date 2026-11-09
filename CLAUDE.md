@@ -34,7 +34,7 @@ cargo run --bin tpt-protocol-daemon -- --simulate modbus
 cargo run --bin tpt-protocol-cli
 ```
 
-CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, `no_std` (build for `thumbv6m-none-eabi`), `msrv` (check on Rust 1.81), and `cargo-deny`. Nightly fuzzing of every parser runs from `.github/workflows/fuzz.yml`; cargo-fuzz does not link on Windows, so run fuzz targets on Linux (`cargo +nightly fuzz run <target> --fuzz-dir fuzz`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
+CI (`.github/workflows/ci.yml`) runs independent jobs: `fmt`, `clippy`, `test`, `docs` (`cargo doc` with `-D warnings`), `telos` (formal verification, `--features verify`), `no_std` (build for `thumbv6m-none-eabi`), `msrv` (check on Rust 1.81), `cargo-deny`, `ui-embedded` (clippy, Windows runner), and `ui-web` (svelte-check and Vite build). It also runs weekly on a schedule. Nightly fuzzing of every parser runs from `.github/workflows/fuzz.yml`; cargo-fuzz does not link on Windows, so run fuzz targets on Linux (`cargo +nightly fuzz run <target> --fuzz-dir fuzz`). Any change to a protocol/core/tup crate must stay `no_std`-clean or it breaks that job.
 
 ## Architecture
 
