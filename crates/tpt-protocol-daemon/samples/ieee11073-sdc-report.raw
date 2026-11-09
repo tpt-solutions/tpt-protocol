@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<s12:Envelope xmlns:s12="http://www.w3.org/2003/05/soap-envelope"
+              xmlns:wsa="http://www.w3.org/2005/08/addressing"
+              xmlns:pm="http://standards.ieee.org/downloads/11073/11073-10207-2017/participant">
+  <s12:Header>
+    <wsa:Action>http://standards.ieee.org/downloads/11073/11073-20701-2018/ServiceModel/Waveform</wsa:Action>
+    <wsa:MessageID>urn:uuid:1234</wsa:MessageID>
+  </s12:Header>
+  <s12:Body>
+<pm:EpisodicMetricReport>
+  <pm:ReportPart>
+    <pm:NumericMetricState DescriptorHandle="mds0.vmd0.metric1" StateVersion="1">
+      <pm:MetricValue Value="37.5"/>
+    </pm:NumericMetricState>
+    <pm:NumericMetricState DescriptorHandle="mds0.vmd0.metric2">
+      <pm:MetricValue Value="98.2"/>
+    </pm:NumericMetricState>
+  </pm:ReportPart>
+</pm:EpisodicMetricReport></s12:Body></s12:Envelope>
