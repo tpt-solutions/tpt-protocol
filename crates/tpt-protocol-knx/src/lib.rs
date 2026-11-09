@@ -189,7 +189,7 @@ impl FrameParser for KnxParser {
     type Frame = KnxFrame;
 
     /// cEMI `L_Data` layout (KNX 3/6/3 section 4.1.5):
-    /// [0] message code, [1] additional-info length N, [2..2+N] additional info,
+    /// \[0\] message code, \[1\] additional-info length N, \[2..2+N\] additional info,
     /// then control 1, control 2, source (2), destination (2), NPDU length,
     /// TPCI/APCI (2 octets), and data.
     /// The NPDU length counts the octets after it, minus one. For a one-octet

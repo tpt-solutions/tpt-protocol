@@ -216,8 +216,8 @@ impl FrameParser for CoapParser {
     type Frame = CoapFrame;
 
     /// CoAP binary header (RFC 7252):
-    /// [0] bits 7-6: version, bits 5-4: type, bits 3-0: token len
-    /// [1]: code
+    /// \[0\] bits 7-6: version, bits 5-4: type, bits 3-0: token len
+    /// \[1\]: code
     /// [2-3]: message ID
     /// [4..4+token_len]: token
     /// [4+token_len..]: options (type-length-value) + payload marker 0xFF + payload
