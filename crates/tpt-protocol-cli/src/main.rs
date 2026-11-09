@@ -1,8 +1,9 @@
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use futures_util::StreamExt;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
@@ -16,6 +17,9 @@ use tokio_tungstenite::connect_async;
 use tpt_protocol_tup::{json, DataPoint, Quality};
 
 const MAX_DATA_POINTS: usize = 100;
+/// Messages buffered between the socket task and the UI. When the UI falls behind,
+/// the socket task waits, which pushes back on TCP instead of growing memory.
+const CHANNEL_CAPACITY: usize = 256;
 const TICK_RATE: Duration = Duration::from_millis(100);
 
 /// Truncate `s` to at most `max` bytes, never splitting a UTF-8 character, and
@@ -49,7 +53,7 @@ enum WsMessage {
 }
 
 struct App {
-    data_points: Vec<DataPoint>,
+    data_points: VecDeque<DataPoint>,
     connected: bool,
     data_count: u64,
     error: Option<String>,
@@ -60,7 +64,7 @@ struct App {
 impl App {
     fn new() -> Self {
         Self {
-            data_points: Vec::with_capacity(MAX_DATA_POINTS),
+            data_points: VecDeque::with_capacity(MAX_DATA_POINTS),
             connected: false,
             data_count: 0,
             error: None,
@@ -71,11 +75,11 @@ impl App {
 
     fn add_data(&mut self, points: Vec<DataPoint>) {
         for dp in points {
-            self.data_points.push(dp);
+            self.data_points.push_back(dp);
             self.data_count += 1;
         }
         while self.data_points.len() > MAX_DATA_POINTS {
-            self.data_points.remove(0);
+            self.data_points.pop_front();
         }
     }
 
@@ -143,11 +147,11 @@ fn parse_data_points(text: &str) -> Result<Vec<DataPoint>, String> {
     }
 }
 
-async fn ws_task(url: String, tx: mpsc::UnboundedSender<WsMessage>) {
+async fn ws_task(url: String, tx: mpsc::Sender<WsMessage>) {
     loop {
         match connect_async(&url).await {
             Ok((ws_stream, _)) => {
-                let _ = tx.send(WsMessage::Connected);
+                let _ = tx.send(WsMessage::Connected).await;
                 let (_, mut read) = ws_stream.split();
                 loop {
                     match read.next().await {
@@ -155,16 +159,16 @@ async fn ws_task(url: String, tx: mpsc::UnboundedSender<WsMessage>) {
                             if let Ok(text) = msg.to_text() {
                                 match parse_data_points(text) {
                                     Ok(points) => {
-                                        let _ = tx.send(WsMessage::Data(points));
+                                        let _ = tx.send(WsMessage::Data(points)).await;
                                     }
                                     Err(e) => {
-                                        let _ = tx.send(WsMessage::Error(e));
+                                        let _ = tx.send(WsMessage::Error(e)).await;
                                     }
                                 }
                             }
                         }
                         Some(Err(e)) => {
-                            let _ = tx.send(WsMessage::Error(e.to_string()));
+                            let _ = tx.send(WsMessage::Error(e.to_string())).await;
                             break;
                         }
                         None => break,
@@ -172,10 +176,10 @@ async fn ws_task(url: String, tx: mpsc::UnboundedSender<WsMessage>) {
                 }
             }
             Err(e) => {
-                let _ = tx.send(WsMessage::Error(e.to_string()));
+                let _ = tx.send(WsMessage::Error(e.to_string())).await;
             }
         }
-        let _ = tx.send(WsMessage::Disconnected);
+        let _ = tx.send(WsMessage::Disconnected).await;
         tokio::time::sleep(Duration::from_secs(3)).await;
     }
 }
@@ -305,11 +309,21 @@ fn main() -> Result<()> {
         None => cli.url,
     };
 
-    let (tx, mut rx) = mpsc::unbounded_channel();
+    let (tx, mut rx) = mpsc::channel(CHANNEL_CAPACITY);
     let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
     rt.spawn(ws_task(url, tx));
 
     let mut terminal = ratatui::init();
+    // Restore the terminal on every path, including errors from the loop.
+    let result = run_ui(&mut terminal, &mut rx);
+    ratatui::restore();
+    result
+}
+
+fn run_ui(
+    terminal: &mut ratatui::DefaultTerminal,
+    rx: &mut mpsc::Receiver<WsMessage>,
+) -> Result<()> {
     let mut app = App::new();
     let mut last_tick = Instant::now();
 
@@ -317,13 +331,17 @@ fn main() -> Result<()> {
         let timeout = TICK_RATE.saturating_sub(last_tick.elapsed());
         if event::poll(timeout).context("failed to poll events")? {
             if let Event::Key(key) = event::read().context("failed to read event")? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Char('Q') => break,
-                    KeyCode::Esc => break,
-                    KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => break,
-                    KeyCode::Up => app.scroll_up(),
-                    KeyCode::Down => app.scroll_down(),
-                    _ => {}
+                // Windows reports key release and repeat as well as press. Acting on
+                // all of them scrolls twice per keystroke.
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('q') | KeyCode::Char('Q') => break,
+                        KeyCode::Esc => break,
+                        KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => break,
+                        KeyCode::Up => app.scroll_up(),
+                        KeyCode::Down => app.scroll_down(),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -352,7 +370,6 @@ fn main() -> Result<()> {
         }
     }
 
-    ratatui::restore();
     Ok(())
 }
 

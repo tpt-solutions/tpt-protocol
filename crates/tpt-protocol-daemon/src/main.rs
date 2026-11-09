@@ -558,6 +558,71 @@ mod tests {
         assert!(!ct_eq(b"secret", b"secret2"));
     }
 
+    fn handshake(headers: &[(&str, &str)]) -> Request {
+        let mut b = Request::builder().uri("/");
+        for (k, v) in headers {
+            b = b.header(*k, *v);
+        }
+        b.body(()).unwrap()
+    }
+
+    fn policy(token: Option<&str>, check_host: bool) -> WsPolicy {
+        WsPolicy {
+            token: token.map(str::to_string),
+            allowed_origins: vec!["http://localhost:5173".to_string()],
+            check_host,
+        }
+    }
+
+    #[test]
+    fn handshake_accepts_loopback_host_and_allowed_origin() {
+        let p = policy(None, true);
+        let req = handshake(&[
+            ("host", "127.0.0.1:9080"),
+            ("origin", "http://localhost:5173"),
+        ]);
+        assert!(authorize(&req, &p).is_ok());
+        // Non-browser clients send no Origin, and that is allowed.
+        assert!(authorize(&handshake(&[("host", "localhost:9080")]), &p).is_ok());
+    }
+
+    #[test]
+    fn handshake_rejects_foreign_origin_and_foreign_host() {
+        let p = policy(None, true);
+        let evil = handshake(&[
+            ("host", "127.0.0.1:9080"),
+            ("origin", "https://evil.example"),
+        ]);
+        assert_eq!(authorize(&evil, &p).unwrap_err().0, StatusCode::FORBIDDEN);
+        // DNS rebinding: the page is served from evil.example, so Host is not loopback.
+        let rebind = handshake(&[("host", "evil.example:9080")]);
+        assert_eq!(authorize(&rebind, &p).unwrap_err().0, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn handshake_host_check_is_only_enforced_on_loopback() {
+        // A daemon bound to a non-loopback address does not check Host.
+        let p = policy(None, false);
+        assert!(authorize(&handshake(&[("host", "daemon.lan:9080")]), &p).is_ok());
+    }
+
+    #[test]
+    fn handshake_requires_the_token_when_one_is_set() {
+        let p = policy(Some("s3cret"), true);
+        let missing = handshake(&[("host", "127.0.0.1")]);
+        assert_eq!(
+            authorize(&missing, &p).unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        let wrong = handshake(&[("host", "127.0.0.1"), ("authorization", "Bearer nope")]);
+        assert_eq!(
+            authorize(&wrong, &p).unwrap_err().0,
+            StatusCode::UNAUTHORIZED
+        );
+        let bearer = handshake(&[("host", "127.0.0.1"), ("authorization", "Bearer s3cret")]);
+        assert!(authorize(&bearer, &p).is_ok());
+    }
+
     #[test]
     fn origin_normalization() {
         assert_eq!(
@@ -625,8 +690,8 @@ mod tests {
         ] {
             let raw = std::fs::read(format!("{dir}/{file}")).unwrap();
             let bytes = decode_hex_file(&raw).unwrap_or_else(|e| panic!("{file}: {e}"));
-            let dp = plugins::replay_one("modbus", &bytes)
-                .unwrap_or_else(|e| panic!("{file}: {e}"));
+            let dp =
+                plugins::replay_one("modbus", &bytes).unwrap_or_else(|e| panic!("{file}: {e}"));
             assert_eq!(
                 dp.value,
                 tpt_protocol_tup::TupValue::Int(first_register),
