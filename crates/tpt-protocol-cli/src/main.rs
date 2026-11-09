@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style, Stylize},
@@ -13,7 +13,7 @@ use ratatui::{
     Frame,
 };
 use tokio::sync::mpsc;
-use tokio_tungstenite::connect_async;
+use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tpt_protocol_tup::{json, DataPoint, Quality};
 
 const MAX_DATA_POINTS: usize = 100;
@@ -59,6 +59,9 @@ struct App {
     error: Option<String>,
     connected_since: Option<Instant>,
     scroll_offset: usize,
+    /// When true the view stays on the newest rows. Scrolling up turns it off;
+    /// scrolling back to the bottom, or pressing End, turns it on again.
+    follow: bool,
 }
 
 impl App {
@@ -70,6 +73,7 @@ impl App {
             error: None,
             connected_since: None,
             scroll_offset: 0,
+            follow: true,
         }
     }
 
@@ -84,21 +88,50 @@ impl App {
     }
 
     fn scroll_up(&mut self) {
+        self.follow = false;
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 
     fn scroll_down(&mut self) {
+        // `ui` clamps the offset to the bottom and re-enables follow once reached.
         self.scroll_offset = self.scroll_offset.saturating_add(1);
+    }
+
+    fn scroll_to_end(&mut self) {
+        self.follow = true;
     }
 }
 
-fn format_timestamp(ts: u64) -> String {
-    let total_secs = ts / 1000;
-    let millis = ts % 1000;
-    let h = (total_secs / 3600) % 24;
-    let m = (total_secs / 60) % 60;
-    let s = total_secs % 60;
-    format!("{:02}:{:02}:{:02}.{:03}", h, m, s, millis)
+/// Index of the first row to show so that the last `visible` rows are on screen.
+fn bottom_offset(rows: usize, visible: usize) -> usize {
+    rows.saturating_sub(visible)
+}
+
+/// Convert days since 1970-01-01 to a (year, month, day) in the proleptic
+/// Gregorian calendar (Howard Hinnant's `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
+}
+
+/// Format a TUP timestamp (milliseconds since the Unix epoch) as UTC,
+/// e.g. `2026-11-09 14:03:07.512Z`. Local time is deliberately not used:
+/// it needs a timezone database that this std-only formatter does not carry.
+fn format_timestamp(ts_ms: u64) -> String {
+    let secs = ts_ms / 1000;
+    let millis = ts_ms % 1000;
+    let (y, mo, d) = civil_from_days((secs / 86_400) as i64);
+    let rem = secs % 86_400;
+    let (h, mi, s) = (rem / 3600, (rem / 60) % 60, rem % 60);
+    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}.{millis:03}Z")
 }
 
 fn format_duration(d: Duration) -> String {
@@ -152,21 +185,34 @@ async fn ws_task(url: String, tx: mpsc::Sender<WsMessage>) {
         match connect_async(&url).await {
             Ok((ws_stream, _)) => {
                 let _ = tx.send(WsMessage::Connected).await;
-                let (_, mut read) = ws_stream.split();
+                let (mut write, mut read) = ws_stream.split();
                 loop {
                     match read.next().await {
-                        Some(Ok(msg)) => {
-                            if let Ok(text) = msg.to_text() {
-                                match parse_data_points(text) {
-                                    Ok(points) => {
-                                        let _ = tx.send(WsMessage::Data(points)).await;
-                                    }
-                                    Err(e) => {
-                                        let _ = tx.send(WsMessage::Error(e)).await;
+                        Some(Ok(msg)) => match msg {
+                            Message::Text(_) | Message::Binary(_) => {
+                                if let Ok(text) = msg.to_text() {
+                                    match parse_data_points(text) {
+                                        Ok(points) => {
+                                            let _ = tx.send(WsMessage::Data(points)).await;
+                                        }
+                                        Err(e) => {
+                                            let _ = tx.send(WsMessage::Error(e)).await;
+                                        }
                                     }
                                 }
                             }
-                        }
+                            // The read half alone cannot send the pong: tungstenite
+                            // queues it on the write half, so answer explicitly or the
+                            // daemon sees an unresponsive client.
+                            Message::Ping(payload) => {
+                                if let Err(e) = write.send(Message::Pong(payload)).await {
+                                    let _ = tx.send(WsMessage::Error(e.to_string())).await;
+                                    break;
+                                }
+                            }
+                            Message::Close(_) => break,
+                            _ => {}
+                        },
                         Some(Err(e)) => {
                             let _ = tx.send(WsMessage::Error(e.to_string())).await;
                             break;
@@ -234,10 +280,13 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let header = Row::new(header_cells);
 
     let max_visible = table_area.height.saturating_sub(3).max(1) as usize;
-    if app.scroll_offset + max_visible > app.data_points.len()
-        && app.data_points.len() > max_visible
-    {
-        app.scroll_offset = app.data_points.len().saturating_sub(max_visible);
+    let bottom = bottom_offset(app.data_points.len(), max_visible);
+    if app.follow {
+        app.scroll_offset = bottom;
+    } else if app.scroll_offset >= bottom {
+        // Scrolled back down to the newest row: resume following.
+        app.scroll_offset = bottom;
+        app.follow = true;
     }
 
     let rows: Vec<Row> = app
@@ -267,7 +316,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .collect();
 
     let widths = [
-        Constraint::Length(15),
+        Constraint::Length(24),
         Constraint::Length(12),
         Constraint::Length(20),
         Constraint::Length(20),
@@ -287,6 +336,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
         Span::raw("uit "),
         Span::styled("[↑↓]", Style::new().bold()),
         Span::raw(" Scroll "),
+        Span::styled("[End]", Style::new().bold()),
+        Span::raw(if app.follow {
+            " Following "
+        } else {
+            " Follow "
+        }),
         Span::styled("[Esc]", Style::new().bold()),
         Span::raw(" Quit"),
         if let Some(ref err) = app.error {
@@ -340,6 +395,7 @@ fn run_ui(
                         KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => break,
                         KeyCode::Up => app.scroll_up(),
                         KeyCode::Down => app.scroll_down(),
+                        KeyCode::End => app.scroll_to_end(),
                         _ => {}
                     }
                 }
@@ -401,5 +457,37 @@ mod tests {
     fn lagged_notice_is_reported_not_parsed_as_points() {
         let err = parse_data_points(r#"{"type":"lagged","dropped":7}"#).unwrap_err();
         assert!(err.contains("dropped 7"), "got: {err}");
+    }
+
+    #[test]
+    fn timestamp_epoch_and_known_instants() {
+        assert_eq!(format_timestamp(0), "1970-01-01 00:00:00.000Z");
+        // 2000-02-29 (leap day) 12:34:56.789 UTC = 951827696 s.
+        assert_eq!(
+            format_timestamp(951_827_696_789),
+            "2000-02-29 12:34:56.789Z"
+        );
+        // 2026-11-09 00:00:00 UTC is day 20766 after the epoch: 1794182400 s.
+        assert_eq!(
+            format_timestamp(1_794_182_400_000),
+            "2026-11-09 00:00:00.000Z"
+        );
+    }
+
+    #[test]
+    fn bottom_offset_shows_newest_rows() {
+        assert_eq!(bottom_offset(0, 10), 0);
+        assert_eq!(bottom_offset(5, 10), 0);
+        assert_eq!(bottom_offset(25, 10), 15);
+    }
+
+    #[test]
+    fn scrolling_up_stops_following_and_end_resumes() {
+        let mut app = App::new();
+        assert!(app.follow);
+        app.scroll_up();
+        assert!(!app.follow);
+        app.scroll_to_end();
+        assert!(app.follow);
     }
 }
