@@ -1,12 +1,10 @@
-//! Real transports: TCP (client or listener), UDP and serial.
+//! Real transports: TCP (client or listener), UDP, serial and SocketCAN.
 //!
 //! Bytes are framed with the protocol's `try_parse` and normalized into TUP
 //! data points. A stream that fails to parse drops its buffer and resyncs.
 //! Frames that parse but carry no data (such as read requests) are skipped and
-//! counted. Serial ports need the `serial` cargo feature.
-//!
-//! CAN (SocketCAN) is still deferred: it is Linux-only and needs a CAN
-//! interface to test.
+//! counted. Serial ports need the `serial` cargo feature. SocketCAN needs the
+//! `socketcan` feature and Linux.
 
 use std::time::Duration;
 
@@ -34,6 +32,9 @@ pub enum Endpoint {
     UdpBind(String),
     /// Read a serial port, reopening it when it fails. Needs the `serial` feature.
     Serial { path: String, baud: u32 },
+    /// Read a SocketCAN interface such as `can0` or `vcan0`. Needs the
+    /// `socketcan` feature and Linux.
+    Can { interface: String },
 }
 
 impl Endpoint {
@@ -44,12 +45,14 @@ impl Endpoint {
         udp_bind: Option<String>,
         serial: Option<String>,
         baud: u32,
+        can: Option<String>,
     ) -> Result<Option<Self>> {
         let chosen: Vec<Endpoint> = [
             tcp_connect.map(Endpoint::TcpConnect),
             tcp_listen.map(Endpoint::TcpListen),
             udp_bind.map(Endpoint::UdpBind),
             serial.map(|path| Endpoint::Serial { path, baud }),
+            can.map(|interface| Endpoint::Can { interface }),
         ]
         .into_iter()
         .flatten()
@@ -57,7 +60,9 @@ impl Endpoint {
         match chosen.len() {
             0 => Ok(None),
             1 => Ok(chosen.into_iter().next()),
-            _ => bail!("choose only one of --tcp-connect, --tcp-listen, --udp-bind and --serial"),
+            _ => bail!(
+                "choose only one of --tcp-connect, --tcp-listen, --udp-bind, --serial and --can"
+            ),
         }
     }
 }
@@ -214,6 +219,66 @@ pub async fn run_serial(
     bail!("serial ports need the daemon to be built with the `serial` feature")
 }
 
+/// Wraps one CAN frame in the framing that a CAN protocol's parser expects.
+/// Returns `None` for protocols that are not carried on CAN.
+#[cfg_attr(not(all(feature = "socketcan", target_os = "linux")), allow(dead_code))]
+pub fn can_message(protocol: &str, raw_id: u32, data: &[u8]) -> Option<Vec<u8>> {
+    let header = match protocol {
+        // CANopen: the 11-bit COB-ID, big-endian.
+        "canopen" => (raw_id as u16 & 0x07FF).to_be_bytes().to_vec(),
+        // J1939 and ISOBUS: the 29-bit identifier, big-endian.
+        "j1939" | "isobus" => raw_id.to_be_bytes().to_vec(),
+        _ => return None,
+    };
+    let mut out = header;
+    out.extend_from_slice(data);
+    Some(out)
+}
+
+/// Reads CAN frames from a SocketCAN interface, one frame per message.
+#[cfg(all(feature = "socketcan", target_os = "linux"))]
+pub async fn run_can(
+    interface: String,
+    protocol: String,
+    tx: broadcast::Sender<DataPoint>,
+) -> Result<()> {
+    use socketcan::tokio::CanSocket;
+    use socketcan::{EmbeddedFrame, Id};
+
+    if can_message(&protocol, 0, &[]).is_none() {
+        bail!("{protocol} is not carried on CAN");
+    }
+    let socket = CanSocket::open(&interface)?;
+    eprintln!("{protocol}: reading CAN interface {interface}");
+    loop {
+        let frame = socket.read_frame().await?;
+        let raw_id = match frame.id() {
+            Id::Standard(id) => id.as_raw() as u32,
+            Id::Extended(id) => id.as_raw(),
+        };
+        let Some(mut buf) = can_message(&protocol, raw_id, frame.data()) else {
+            continue;
+        };
+        let mut points = Vec::new();
+        if let Err(e) = drain(&protocol, &mut buf, &mut points) {
+            eprintln!("{protocol}: {interface}: {e}");
+        }
+        for dp in points {
+            let _ = tx.send(dp);
+        }
+    }
+}
+
+/// Without SocketCAN support the endpoint fails with an explanation.
+#[cfg(not(all(feature = "socketcan", target_os = "linux")))]
+pub async fn run_can(
+    _interface: String,
+    _protocol: String,
+    _tx: broadcast::Sender<DataPoint>,
+) -> Result<()> {
+    bail!("SocketCAN needs Linux and the daemon built with the `socketcan` feature")
+}
+
 /// Binds the endpoint and runs it until it fails.
 pub async fn run(
     endpoint: Endpoint,
@@ -227,6 +292,7 @@ pub async fn run(
         }
         Endpoint::UdpBind(addr) => run_udp(UdpSocket::bind(&addr).await?, protocol, tx).await,
         Endpoint::Serial { path, baud } => run_serial(path, baud, protocol, tx).await,
+        Endpoint::Can { interface } => run_can(interface, protocol, tx).await,
     }
 }
 
@@ -290,20 +356,82 @@ mod tests {
     #[test]
     fn endpoint_rejects_more_than_one_choice() {
         assert!(matches!(
-            Endpoint::from_flags(None, None, None, None, 9600),
+            Endpoint::from_flags(None, None, None, None, 9600, None),
             Ok(None)
         ));
         assert!(
-            Endpoint::from_flags(Some("a".into()), Some("b".into()), None, None, 9600).is_err()
+            Endpoint::from_flags(Some("a".into()), Some("b".into()), None, None, 9600, None)
+                .is_err()
         );
         assert!(matches!(
-            Endpoint::from_flags(None, None, None, Some("/dev/ttyUSB0".into()), 9600),
+            Endpoint::from_flags(None, None, None, Some("/dev/ttyUSB0".into()), 9600, None),
             Ok(Some(Endpoint::Serial { ref path, baud: 9600 })) if path == "/dev/ttyUSB0"
         ));
         assert!(matches!(
-            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into()), None, 9600),
+            Endpoint::from_flags(None, None, Some("0.0.0.0:502".into()), None, 9600, None),
             Ok(Some(Endpoint::UdpBind(ref a))) if a == "0.0.0.0:502"
         ));
+    }
+
+    #[test]
+    fn can_message_frames_each_protocol_as_its_parser_expects() {
+        // CANopen: TPDO1 (0x181), COB-ID big-endian, then the payload.
+        assert_eq!(
+            can_message("canopen", 0x181, &[0x01, 0x02]),
+            Some(vec![0x01, 0x81, 0x01, 0x02])
+        );
+        // J1939: 29-bit identifier big-endian, then the payload.
+        assert_eq!(
+            can_message("j1939", 0x18F00412, &[0xAA]),
+            Some(vec![0x18, 0xF0, 0x04, 0x12, 0xAA])
+        );
+        // Protocols that are not on CAN.
+        assert_eq!(can_message("modbus", 0x181, &[0x01]), None);
+    }
+
+    #[test]
+    fn can_endpoint_is_part_of_the_flag_choice() {
+        assert!(matches!(
+            Endpoint::from_flags(None, None, None, None, 9600, Some("vcan0".into())),
+            Ok(Some(Endpoint::Can { ref interface })) if interface == "vcan0"
+        ));
+        assert!(Endpoint::from_flags(None, None, None, None, 9600, Some("vcan0".into())).is_ok());
+        assert!(Endpoint::from_flags(
+            Some("a".into()),
+            None,
+            None,
+            None,
+            9600,
+            Some("vcan0".into())
+        )
+        .is_err());
+    }
+
+    /// Runs against a SocketCAN interface. Create it with
+    /// `sudo modprobe vcan && sudo ip link add dev vcan0 type vcan && sudo ip link set up vcan0`,
+    /// then run `TPT_TEST_CAN_IF=vcan0 cargo test --features socketcan -- --ignored can_`.
+    #[cfg(all(feature = "socketcan", target_os = "linux"))]
+    #[tokio::test]
+    #[ignore = "needs a SocketCAN interface (see the doc comment)"]
+    async fn can_interface_decodes_canopen_pdo() {
+        use socketcan::tokio::CanSocket;
+        use socketcan::{CanFrame, EmbeddedFrame, StandardId};
+        let interface = std::env::var("TPT_TEST_CAN_IF").expect("TPT_TEST_CAN_IF");
+        let (tx, mut rx) = broadcast::channel(16);
+        tokio::spawn(run_can(interface.clone(), "canopen".into(), tx));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        // TPDO1 from node 1 (COB-ID 0x181), payload 0x0201 little-endian.
+        let writer = CanSocket::open(&interface).unwrap();
+        let frame =
+            CanFrame::new(StandardId::new(0x181).unwrap(), &[0x01, 0x02, 0x00, 0x00]).unwrap();
+        writer.write_frame(frame).await.unwrap();
+
+        let dp = tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dp.value, TupValue::Int(0x0201));
     }
 
     #[tokio::test]

@@ -5,8 +5,8 @@ Background service for the [TPT Protocol](https://github.com/tpt-protocol/tpt-pr
 The daemon is a `std` binary crate that drives every protocol crate in the
 workspace through a common plugin interface and streams normalized TUP data
 to local clients over WebSocket. It can read real bytes over **TCP** (client
-or listener), **UDP**, and **serial** (with the `serial` cargo feature). CAN is
-not implemented (see [_Known gaps_](#known-gaps) below).
+or listener), **UDP**, **serial** (with the `serial` cargo feature), and
+**SocketCAN** (Linux only, with the `socketcan` cargo feature).
 
 ## Status / Conformance
 
@@ -14,8 +14,9 @@ not implemented (see [_Known gaps_](#known-gaps) below).
 - **Transports:** TCP (connect or listen) and UDP read real bytes. Each
   protocol's `try_parse` frames them and its normalizer produces TUP data
   points. Without a transport flag the daemon runs the simulation. Serial and
-  CAN are future work (see the workspace `TODO.md`, Phase 12). They need
-  hardware to test, and none was available when they were deferred.
+  SocketCAN are implemented behind cargo features. Serial was tested against a
+  socat pseudo-terminal pair, and SocketCAN against a `vcan0` virtual interface.
+  Neither has been tested on real hardware.
 - **Security posture:** the WebSocket API is bound to loopback (`127.0.0.1`)
   by default. On a loopback bind, the handshake rejects any `Host` header that
   is not a loopback name (DNS-rebinding defence) and any browser `Origin` that
@@ -116,6 +117,9 @@ of three flags:
 - `--udp-bind ADDR:PORT`: receives datagrams. Each datagram must hold whole frames.
 - `--serial PATH --baud N`: reads a serial port, reopening it when it disappears.
   Build with `--features serial`. Without the feature the flag fails with a clear error.
+- `--can IFACE`: reads a SocketCAN interface such as `can0` or `vcan0`. CANopen
+  takes the 11-bit COB-ID and J1939/ISOBUS take the 29-bit identifier. Build with
+  `--features socketcan` on Linux. Other platforms fail with a clear error.
 
 A stream that fails to parse discards its buffer and resyncs. Frames that parse
 but carry no data (such as Modbus read requests) are skipped. The
@@ -188,10 +192,10 @@ stream and print each data point. The daemon's default simulate target is
 
 ## Known gaps
 
-- **Simulation only.** No real Serial/CAN/TCP/UDP transport exists; the
-  `ProtocolPlugin` trait has a `simulate()` method but no real-I/O method.
-  Real hardware I/O is future work (workspace `TODO.md`, Later/Deferred;
-  root `CHANGELOG.md` Phase 5).
+- **Simulation without a transport flag.** Without a transport flag the daemon
+  simulates data. The `ProtocolPlugin` trait has a `simulate()` method but no
+  real-I/O method, so the transports live beside it in `transport.rs`. None of
+  them has run against real hardware.
 - **No authentication.** The WebSocket API is unauthenticated and loopback by
   default; do not expose it on an untrusted network.
 - **MAVLink `CRC_EXTRA`** validation gap lives in the `tpt-protocol-mavlink`

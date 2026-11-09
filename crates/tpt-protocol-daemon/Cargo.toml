@@ -49,6 +49,11 @@ anyhow = "1"
 toml = "0.8"
 hex = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+socketcan = { version = "3", optional = true, features = ["tokio"] }
+
 [features]
 # Serial ports (Linux, macOS, Windows). Off by default: it needs an attached port to exercise.
 serial = ["dep:tokio-serial"]
+# SocketCAN (Linux only). Needs a CAN interface such as vcan0 to exercise.
+socketcan = ["dep:socketcan"]

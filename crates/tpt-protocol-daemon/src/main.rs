@@ -82,6 +82,9 @@ struct Args {
     /// Serial port speed in baud.
     #[arg(long = "baud", default_value_t = 115_200)]
     baud: u32,
+    /// Read a SocketCAN interface, such as can0 or vcan0 (Linux; needs the `socketcan` feature).
+    #[arg(long = "can")]
+    can: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -410,6 +413,7 @@ async fn main() -> Result<()> {
         args.udp_bind.clone(),
         args.serial.clone(),
         args.baud,
+        args.can.clone(),
     )?;
 
     if let Some(ref token) = args.token {
