@@ -73,9 +73,9 @@ impl MapRule {
     fn matches(&self, dp: &DataPoint) -> bool {
         self.protocol
             .as_deref()
-            .map_or(true, |p| p == dp.source_protocol.as_str())
-            && self.device.as_deref().map_or(true, |d| d == dp.device_id)
-            && self.point.as_deref().map_or(true, |p| p == dp.point_id)
+            .is_none_or(|p| p == dp.source_protocol.as_str())
+            && self.device.as_deref().is_none_or(|d| d == dp.device_id)
+            && self.point.as_deref().is_none_or(|p| p == dp.point_id)
     }
 
     fn apply(&self, mut dp: DataPoint) -> DataPoint {

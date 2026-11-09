@@ -174,6 +174,14 @@ One endpoint supplies the bytes, chosen with one of these flags:
   `--features socketcan` on Linux. Other platforms fail with a clear error.
 - `--stdin`: reads bytes piped into the daemon. It needs no hardware, which makes
   it the simplest way to feed a capture through the live pipeline.
+- `--modbus-poll HOST:PORT` (with `--simulate modbus`): polls a Modbus TCP server.
+  A Modbus server sends nothing unprompted, so the passive transports never see
+  its data; this one asks. Every `--interval` ms it reads `--poll-quantity`
+  registers (1 to 125) from `--poll-address`, of `--poll-unit`, using function
+  `--poll-function` (3 holding, the default, or 4 input). Each register becomes a
+  point named by its absolute address, such as `holding_register[100]`. It
+  reconnects after a failure, and it logs exception responses and timeouts (3 s).
+  It cannot be combined with another transport.
 
 Every transport implements two small traits in `transport/mod.rs`. `Transport`
 yields links (a connection, an accepted peer, a socket, a port), and `ByteLink`

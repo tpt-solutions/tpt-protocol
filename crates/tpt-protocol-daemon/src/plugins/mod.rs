@@ -41,7 +41,7 @@ compile_error!("tpt-protocol-daemon needs at least one protocol feature, e.g. `-
 /// Interval between simulated points when `--interval` is not given.
 pub const DEFAULT_SIM_INTERVAL: Duration = Duration::from_secs(1);
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

@@ -14,10 +14,14 @@
 
 mod can;
 mod net;
+#[cfg(feature = "modbus")]
+mod poll;
 mod serial;
 mod stdin;
 
 pub use can::can_message;
+#[cfg(feature = "modbus")]
+pub use poll::PollSpec;
 
 use std::future::Future;
 use std::time::Duration;
@@ -57,6 +61,36 @@ pub enum Endpoint {
     Can { interface: String },
     /// Read bytes piped into the daemon, such as `cat capture.bin | ...`.
     Stdin,
+    /// Poll a Modbus TCP server for registers every `period`. Needs the
+    /// `modbus` feature. Use [`poll_endpoint`] to build one.
+    #[cfg(feature = "modbus")]
+    ModbusPoll {
+        addr: String,
+        spec: PollSpec,
+        period: Duration,
+    },
+}
+
+/// Builds a Modbus TCP poll endpoint, checking the spec. Without the `modbus`
+/// feature this is an error, because there is no Modbus code to poll with.
+pub fn poll_endpoint(
+    addr: String,
+    unit: u8,
+    function: u8,
+    address: u16,
+    quantity: u16,
+    period: Duration,
+) -> Result<Endpoint> {
+    #[cfg(feature = "modbus")]
+    {
+        let spec = PollSpec::new(unit, function, address, quantity)?;
+        Ok(Endpoint::ModbusPoll { addr, spec, period })
+    }
+    #[cfg(not(feature = "modbus"))]
+    {
+        let _ = (addr, unit, function, address, quantity, period);
+        bail!("--modbus-poll needs a daemon built with the `modbus` feature")
+    }
 }
 
 impl Endpoint {
@@ -260,6 +294,10 @@ pub async fn run(
         Endpoint::Serial { path, baud } => run_serial(path, baud, protocol, tx).await,
         Endpoint::Can { interface } => run_can(interface, protocol, tx).await,
         Endpoint::Stdin => run_stdin(protocol, tx).await,
+        #[cfg(feature = "modbus")]
+        Endpoint::ModbusPoll { addr, spec, period } => {
+            poll::run_modbus_poll(addr, spec, period, tx).await
+        }
     }
 }
 

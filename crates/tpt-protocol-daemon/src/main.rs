@@ -101,9 +101,26 @@ struct Args {
     /// Read bytes from standard input, e.g. `cat capture.bin | tpt-protocol-daemon --stdin ...`.
     #[arg(long = "stdin")]
     stdin: bool,
-    /// Milliseconds between simulated points (1 to 3600000). Ignored with a transport.
+    /// Milliseconds between simulated points (1 to 3600000). Ignored with a
+    /// transport, except `--modbus-poll`, which uses it as the poll period.
     #[arg(long = "interval", default_value_t = 1000, value_parser = clap::value_parser!(u64).range(1..=3_600_000))]
     interval: u64,
+    /// Poll a Modbus TCP server at HOST:PORT for registers, every --interval ms.
+    /// Needs `--simulate modbus` and cannot be combined with another transport.
+    #[arg(long = "modbus-poll")]
+    modbus_poll: Option<String>,
+    /// Unit (slave) id to poll.
+    #[arg(long = "poll-unit", default_value_t = 1)]
+    poll_unit: u8,
+    /// Function to poll: 3 (holding registers) or 4 (input registers).
+    #[arg(long = "poll-function", default_value_t = 3)]
+    poll_function: u8,
+    /// First register to read.
+    #[arg(long = "poll-address", default_value_t = 0)]
+    poll_address: u16,
+    /// Number of registers to read, 1 to 125.
+    #[arg(long = "poll-quantity", default_value_t = 10)]
+    poll_quantity: u16,
 }
 
 #[derive(Deserialize, Default)]
@@ -598,6 +615,25 @@ async fn main() -> Result<()> {
         args.can.clone(),
         args.stdin,
     )?;
+    let transport_endpoint = match args.modbus_poll.clone() {
+        Some(addr) => {
+            if transport_endpoint.is_some() {
+                bail!("choose either --modbus-poll or another transport, not both");
+            }
+            if protocol != "modbus" {
+                bail!("--modbus-poll polls Modbus; use --simulate modbus");
+            }
+            Some(transport::poll_endpoint(
+                addr,
+                args.poll_unit,
+                args.poll_function,
+                args.poll_address,
+                args.poll_quantity,
+                Duration::from_millis(args.interval),
+            )?)
+        }
+        None => transport_endpoint,
+    };
 
     if let Some(ref token) = args.token {
         if token.is_empty() {
