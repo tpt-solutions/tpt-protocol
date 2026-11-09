@@ -2533,6 +2533,8 @@ dependencies = [
 name = "tpt-protocol-telos"
 version = "0.1.0"
 dependencies = [
+ "tpt-protocol-core",
+ "tpt-protocol-modbus",
  "tpt-telos-ir",
  "tpt-telos-parser",
  "tpt-telos-verifier",
