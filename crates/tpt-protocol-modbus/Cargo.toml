@@ -21,4 +21,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dev-dependencies]
 proptest = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "parse"
+harness = false
 

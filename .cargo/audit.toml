@@ -1,0 +1,16 @@
+# cargo-audit reads this file (cargo-deny reads deny.toml; keep the two in step).
+# Each ignore has a reason. Remove an entry when its dependency moves on.
+[advisories]
+ignore = [
+    # paste: unmaintained. Proc-macro via ratatui 0.29 in the CLI. Clears with
+    # ratatui 0.30+, which needs Rust 1.88 (workspace MSRV is 1.85).
+    "RUSTSEC-2024-0436",
+    # quick-xml 0.39.4: build-time only, pinned by mavlink-bindgen 0.17.1. It
+    # parses the trusted MAVLink XML definitions, not runtime input.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # lru 0.12.5: unsound, reached only via ratatui 0.29 in the CLI. Clears with
+    # ratatui 0.30+ (Rust 1.88).
+    "RUSTSEC-2026-0002",
+    "RUSTSEC-2026-0253",
+]

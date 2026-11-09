@@ -82,6 +82,47 @@ jobs:
         with:
           targets: thumbv6m-none-eabi
       - run: cargo build --workspace --exclude tpt-protocol-daemon --exclude tpt-protocol-cli --exclude tpt-protocol-telos --exclude tpt-protocol-bindings --exclude xtask --target thumbv6m-none-eabi
+      # Feature matrix for the foundation crates. `std` is host-only and is
+      # deliberately not built here.
+      - run: cargo build -p tpt-protocol-tup -p tpt-protocol-core --no-default-features --target thumbv6m-none-eabi
+      - run: cargo build -p tpt-protocol-tup --features alloc --target thumbv6m-none-eabi
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - run: cargo llvm-cov --workspace --exclude tpt-protocol-ui-embedded --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lcov
+          path: lcov.info
+
+  audit:
+    # RustSec advisories. cargo-deny also checks advisories; this job gives the
+    # plain cargo-audit report and runs on the weekly schedule too.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit --deny warnings
+
+  bench:
+    # Compiles the criterion benchmarks; it does not run them, because shared CI
+    # runners are too noisy to compare timings.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo bench --workspace --no-run
 
   msrv:
     # Pinned to the workspace rust-version. The ui-* apps are not workspace
@@ -97,7 +138,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Pinned to the v2.1.1 commit. Bump the SHA and the comment together.
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
         with:
           command: check
 
