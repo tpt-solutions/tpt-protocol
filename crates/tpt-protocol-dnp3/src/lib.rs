@@ -620,4 +620,65 @@ mod fuzz {
             let _ = parser.parse(&bytes);
         }
     }
+
+    /// A DNP3 data-link frame with correct CRCs (the header CRC, and one CRC per
+    /// 16-byte block of user data). The length field is skewed by -2..=2 so the
+    /// length checks run as well as the happy path.
+    fn dnp3_frame() -> impl Strategy<Value = Vec<u8>> {
+        (
+            any::<u16>(),
+            any::<u16>(),
+            any::<u8>(),
+            proptest::collection::vec(any::<u8>(), 0..48),
+            -2i32..=2,
+        )
+            .prop_map(|(dest, src, ctrl, user, skew)| {
+                let mut out = alloc::vec![0x05, 0x64];
+                let len = (user.len() as i32 + 5 + skew).clamp(0, 255) as u8;
+                out.push(len);
+                out.push(ctrl);
+                out.extend_from_slice(&dest.to_le_bytes());
+                out.extend_from_slice(&src.to_le_bytes());
+                let header_crc = crc16_dnp(&out[0..8]);
+                out.extend_from_slice(&header_crc.to_le_bytes());
+                for block in user.chunks(16) {
+                    out.extend_from_slice(block);
+                    out.extend_from_slice(&crc16_dnp(block).to_le_bytes());
+                }
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_dnp3() -> impl Strategy<Value = Vec<u8>> {
+        (dnp3_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_dnp3_never_panics(bytes in mutated_dnp3()) {
+            let _ = Dnp3Parser::new().parse(&bytes);
+            let _ = Dnp3Parser::new().try_parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_dnp3_never_panics_in_the_normalizer(bytes in dnp3_frame()) {
+            if let Ok(frame) = Dnp3Parser::new().parse(&bytes) {
+                let _ = Dnp3Normalizer::new().normalize(&frame);
+            }
+        }
+    }
 }
