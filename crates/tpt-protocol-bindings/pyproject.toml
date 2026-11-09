@@ -1,0 +1,28 @@
+# Builds the Python module (`import tpt_protocol`) as a wheel with maturin:
+#
+#   pip install maturin
+#   maturin build --release            # wheel in ../../target/wheels/
+#   maturin develop --release          # install into the current virtualenv
+#
+# The `python` feature enables the pyo3 front end (see Cargo.toml). Nothing here is
+# published: `publish = false` in Cargo.toml, and this file is for local and CI builds.
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "tpt-protocol"
+version = "0.1.0"
+description = "Decode industrial, medical and hardware protocol frames to TUP JSON"
+requires-python = ">=3.9"
+license = { text = "MIT OR Apache-2.0" }
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Software Development :: Libraries",
+]
+
+[tool.maturin]
+features = ["python"]
+module-name = "tpt_protocol"
