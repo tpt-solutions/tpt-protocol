@@ -13,6 +13,9 @@ import { ScrollView, ListView } from "std-widgets.slint";
 
 export component MainWindow inherits Window {
     in-out property <[DataRow]> rows: [];
+    // Set from the daemon connection: whether the WebSocket is up, and a message for the user.
+    in-out property <bool> connected: false;
+    in-out property <string> status: "Connecting to the daemon...";
 
     VerticalLayout {
         padding: 8px;
@@ -22,6 +25,12 @@ export component MainWindow inherits Window {
             text: "TPT Protocol — Live Telemetry";
             font-size: 22px;
             color: #ffffff;
+        }
+
+        Text {
+            text: root.status;
+            font-size: 14px;
+            color: root.connected ? #3fb950 : #f85149;
         }
 
         HorizontalLayout {

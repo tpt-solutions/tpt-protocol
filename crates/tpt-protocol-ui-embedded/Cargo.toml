@@ -5,12 +5,12 @@ version = "0.1.0"
 description = "Native embedded UI (Slint) for the TPT Protocol daemon"
 keywords = ["tpt", "protocol", "ui", "embedded", "slint"]
 categories = ["gui"]
-authors.workspace = true
-edition.workspace = true
+authors = ["TPT Solutions"]
+edition = "2021"
 rust-version = "1.90"
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/tpt-protocol/tpt-protocol"
+repository = "https://github.com/tpt-protocol/tpt-protocol"
 
 [[bin]]
 name = "tpt-protocol-ui-embedded"
@@ -20,11 +20,14 @@ path = "src/main.rs"
 slint-build = "1"
 
 [dependencies]
-tpt-protocol-tup = { workspace = true, features = ["std"] }
-serde_json = { workspace = true, features = ["std"] }
+tpt-protocol-tup = { version = "0.1.0", path = "../tpt-protocol-tup", default-features = false, features = ["std"] }
+serde_json = { version = "1", default-features = false, features = ["alloc", "std"] }
 tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 slint = "1"
+
+# Standalone workspace root: this crate is excluded from the main workspace.
+[workspace]
