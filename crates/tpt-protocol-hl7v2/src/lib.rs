@@ -199,22 +199,86 @@ pub struct Hl7ConnectionState {
 
 pub struct Hl7Normalizer;
 
+/// The first component of field `index` of a segment, or "" when it is absent.
+/// Segment fields are indexed so that `fields[n]` is field `n` (OBX-n).
+fn field_text(segment: &Hl7Segment, index: usize) -> &str {
+    segment
+        .fields
+        .get(index)
+        .and_then(|f| f.components.first())
+        .map(String::as_str)
+        .unwrap_or("")
+}
+
+impl Hl7Normalizer {
+    /// One point per OBX observation. Numeric results (value type NM) are floats;
+    /// other results are text. The result status (OBX-11) sets the quality: `F`
+    /// or empty is final, `X` and `D` (not done, deleted) are bad, and anything
+    /// else (preliminary, corrected) is uncertain.
+    fn observations(frame: &Hl7Frame) -> Vec<DataPoint> {
+        frame
+            .segments
+            .iter()
+            .filter(|segment| segment.name == "OBX")
+            .map(|obx| {
+                let code = field_text(obx, 3);
+                let point_id = if code.is_empty() {
+                    alloc::format!("obs-{}", field_text(obx, 1))
+                } else {
+                    alloc::string::String::from(code)
+                };
+                let raw = field_text(obx, 5);
+                let value = if field_text(obx, 2) == "NM" {
+                    raw.parse::<f64>()
+                        .map(TupValue::Float)
+                        .unwrap_or_else(|_| TupValue::Text(alloc::string::String::from(raw)))
+                } else {
+                    TupValue::Text(alloc::string::String::from(raw))
+                };
+                let quality = match field_text(obx, 11) {
+                    "" | "F" => Quality::Good,
+                    "X" | "D" => Quality::Bad,
+                    _ => Quality::Uncertain,
+                };
+                let mut dp = DataPoint::new(
+                    SourceProtocol::Hl7v2,
+                    alloc::format!("hl7/{}", frame.trigger_event),
+                    point_id,
+                    0,
+                    value,
+                    quality,
+                );
+                let unit = field_text(obx, 6);
+                if !unit.is_empty() {
+                    dp = dp.with_unit(unit);
+                }
+                dp
+            })
+            .collect()
+    }
+}
+
 impl DataNormalizer for Hl7Normalizer {
     type Frame = Hl7Frame;
 
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        let device_id = alloc::format!("hl7/{}", frame.trigger_event);
-        let point_id = frame.msh.message_control_id.clone();
-        let value = TupValue::Text(frame.msh.message_type.clone());
+        Self::observations(frame).into_iter().next().ok_or_else(|| {
+            Error::Normalize(alloc::format!(
+                "HL7 {} has no OBX observation",
+                frame.msh.message_type
+            ))
+        })
+    }
 
-        Ok(DataPoint::new(
-            SourceProtocol::Hl7v2,
-            device_id,
-            point_id,
-            0,
-            value,
-            Quality::Good,
-        ))
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        let points = Self::observations(frame);
+        if points.is_empty() {
+            return Err(Error::Normalize(alloc::format!(
+                "HL7 {} has no OBX observation",
+                frame.msh.message_type
+            )));
+        }
+        Ok(points)
     }
 }
 
@@ -227,7 +291,7 @@ mod tests {
     }
 
     fn make_oru_message() -> Vec<u8> {
-        "MSH|^~\\&|LAB|HOSP|EHR|HOSP|20240101010000||ORU^R01|msg002|P|2.5|\rPID|1||67890^^^MRN^MRN||Smith^Jane||19850615|F|||456 Oak Ave^^Springfield^IL^62701^USA|||||\rOBR|1|ord123|spec456|LIPID^Lipid Panel^L|||20240101000000|||||||20240101010000|||F\rOBX|1|NM|CHOL^Cholesterol^L||190|mg/dL|100-199|N||F".as_bytes().to_vec()
+        "MSH|^~\\&|LAB|HOSP|EHR|HOSP|20240101010000||ORU^R01|msg002|P|2.5|\rPID|1||67890^^^MRN^MRN||Smith^Jane||19850615|F|||456 Oak Ave^^Springfield^IL^62701^USA|||||\rOBR|1|ord123|spec456|LIPID^Lipid Panel^L|||20240101000000|||||||20240101010000|||F\rOBX|1|NM|CHOL^Cholesterol^L||190|mg/dL|100-199|N|||F".as_bytes().to_vec()
     }
 
     #[test]
@@ -302,11 +366,34 @@ mod tests {
     fn normalize_roundtrip() {
         let parser = Hl7Parser;
         let normalizer = Hl7Normalizer;
-        let bytes = make_adt_message();
-        let frame = parser.parse(&bytes).unwrap();
+        // An ADT carries no observations, so there is no value to report.
+        let frame = parser.parse(&make_adt_message()).unwrap();
+        assert!(normalizer.normalize(&frame).is_err());
+
+        // An ORU reports its OBX result: CHOL 190 mg/dL, final.
+        let frame = parser.parse(&make_oru_message()).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Hl7v2);
-        assert_eq!(dp.point_id, "ctrl123");
+        assert_eq!(dp.point_id, "CHOL");
+        assert_eq!(dp.value, TupValue::Float(190.0));
+        assert_eq!(dp.unit.as_deref(), Some("mg/dL"));
+        assert_eq!(dp.quality, Quality::Good);
+    }
+
+    #[test]
+    fn result_status_sets_the_quality() {
+        let parser = Hl7Parser;
+        let normalizer = Hl7Normalizer;
+        let text = make_oru_message();
+        // Preliminary (P) is uncertain; not done (X) is bad.
+        for (status, expected) in [("P", Quality::Uncertain), ("X", Quality::Bad)] {
+            let edited = String::from_utf8(text.clone())
+                .unwrap()
+                .replace("|N|||F", &alloc::format!("|N|||{status}"));
+            let frame = parser.parse(edited.as_bytes()).unwrap();
+            let dp = normalizer.normalize(&frame).unwrap();
+            assert_eq!(dp.quality, expected, "status {status}");
+        }
     }
 
     #[test]

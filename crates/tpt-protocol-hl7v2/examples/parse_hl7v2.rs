@@ -12,7 +12,7 @@ fn build_oru() -> Vec<u8> {
         "MSH|^~\\&|LAB|HOSP|EHR|HOSP|20240101010000||ORU^R01|msg002|P|2.5|",
         "PID|1||67890^^^MRN^MRN||Smith^Jane||19850615|F",
         "OBR|1|ord123|spec456|LIPID^Lipid Panel^L|||20240101000000|||||||20240101010000|||F",
-        "OBX|1|NM|CHOL^Cholesterol^L||190|mg/dL|100-199|N||F",
+        "OBX|1|NM|CHOL^Cholesterol^L||190|mg/dL|100-199|N|||F",
     ]
     .join("\r")
     .into_bytes()
