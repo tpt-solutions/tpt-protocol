@@ -215,5 +215,6 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
+      - run: npx svelte-kit sync
       - run: npx svelte-check --tsconfig ./tsconfig.json
       - run: npm run build
