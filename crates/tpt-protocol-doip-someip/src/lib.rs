@@ -398,9 +398,18 @@ impl DataNormalizer for DoipSomeipNormalizer {
 
         match frame {
             DoipSomeipFrame::Doip(d) => {
+                // Only messages with a body carry data (a diagnostic message carries
+                // the addresses and the UDS request). A header-only message such as a
+                // vehicle identification request has nothing to report.
+                if d.payload.is_empty() {
+                    return Err(Error::Normalize(format!(
+                        "doip {} carries no data",
+                        d.payload_type
+                    )));
+                }
                 let device_id = String::from("doip:gateway");
                 let point_id = format!("doip:{}", d.payload_type);
-                let value = TupValue::Int(d.payload_length as i64);
+                let value = TupValue::Bytes(d.payload.clone());
                 Ok(DataPoint::new(
                     SourceProtocol::DoipSomeip,
                     device_id,
@@ -619,11 +628,20 @@ mod tests {
     fn normalize_doip_roundtrip() {
         let parser = DoipSomeipParser::new();
         let normalizer = DoipSomeipNormalizer::new();
+        // A header-only request has no data to report.
         let bytes = &[0x02, 0xFD, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00];
         let frame = parser.parse(bytes).unwrap();
+        assert!(normalizer.normalize(&frame).is_err());
+
+        // A diagnostic message reports its body.
+        let bytes = [
+            0x02, 0xFD, 0x80, 0x01, 0x00, 0x00, 0x00, 0x03, 0x0E, 0x80, 0x22,
+        ];
+        let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::DoipSomeip);
-        assert_eq!(dp.point_id, "doip:VehIdentReq");
+        assert_eq!(dp.point_id, "doip:DiagMsg");
+        assert_eq!(dp.value, TupValue::Bytes(vec![0x0E, 0x80, 0x22]));
     }
 
     #[test]

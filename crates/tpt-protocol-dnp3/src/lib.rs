@@ -314,22 +314,23 @@ impl DataNormalizer for Dnp3Normalizer {
     type Frame = Dnp3Frame;
 
     fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+        // A request without data (such as a READ with no object headers) carries no
+        // measured value, so there is no point to report. The data-link length is not
+        // a measurement and is not reported as one.
+        if frame.payload.is_empty() {
+            return Err(Error::Normalize(format!(
+                "dnp3 {} carries no data",
+                frame.app_function
+            )));
+        }
         let device_id = format!("dnp3:{}", frame.source);
         let point_id = format!("func:{}", frame.app_function);
-        let timestamp = 0;
-
-        let value = if !frame.payload.is_empty() {
-            TupValue::Bytes(frame.payload.clone())
-        } else {
-            TupValue::Int(frame.length as i64)
-        };
-
         Ok(DataPoint::new(
             SourceProtocol::Dnp3,
             device_id,
             point_id,
-            timestamp,
-            value,
+            0,
+            TupValue::Bytes(frame.payload.clone()),
             Quality::Good,
         ))
     }
@@ -406,10 +407,17 @@ mod tests {
         let normalizer = Dnp3Normalizer::new();
         let bytes = make_dnp3_frame(0x0123, 0x0A, 0x44, 1, &[]);
         let frame = parser.parse(&bytes).unwrap();
+        // A bare READ has no data, so it normalizes to an error, not a length.
+        assert!(normalizer.normalize(&frame).is_err());
+
+        // A response with data reports the data as bytes.
+        let bytes = make_dnp3_frame(0x0123, 0x0A, 0x44, 0x81, &[0x00, 0x00, 0x1E, 0x02]);
+        let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Dnp3);
         assert_eq!(dp.device_id, "dnp3:291");
-        assert_eq!(dp.point_id, "func:Read");
+        assert_eq!(dp.point_id, "func:Response");
+        assert_eq!(dp.value, TupValue::Bytes(vec![0x00, 0x00, 0x1E, 0x02]));
     }
 
     #[test]
