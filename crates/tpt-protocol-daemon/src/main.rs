@@ -2,6 +2,7 @@ mod anomaly;
 mod capture;
 mod detect;
 mod mapping;
+mod mcap_record;
 mod pcap;
 mod plugins;
 mod record;
@@ -89,6 +90,10 @@ struct Args {
     /// Topic prefix for `--mqtt`.
     #[arg(long = "mqtt-prefix", default_value = "tpt")]
     mqtt_prefix: String,
+    /// Record every point to this MCAP file (one channel per series). Needs the
+    /// `mcap-record` feature. See `mcap_record.rs` for what an interrupted file lacks.
+    #[arg(long = "record-mcap")]
+    record_mcap: Option<std::path::PathBuf>,
     /// Require this token on WebSocket connections, as `?token=` or `Authorization: Bearer`.
     #[arg(long)]
     token: Option<String>,
@@ -745,6 +750,9 @@ async fn main() -> Result<()> {
     ));
     if let Some(addr) = args.mqtt.clone() {
         sink::spawn_mqtt(&addr, &args.mqtt_prefix, tx.subscribe())?;
+    }
+    if let Some(path) = args.record_mcap.clone() {
+        mcap_record::spawn_mcap(&path, tx.subscribe())?;
     }
     if let Some(path) = args.record.clone() {
         let record_tx = tx.clone();

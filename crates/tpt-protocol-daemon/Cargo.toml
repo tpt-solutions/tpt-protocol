@@ -47,6 +47,7 @@ tokio = { workspace = true }
 tokio-tungstenite = { workspace = true }
 tokio-serial = { version = "5", optional = true }
 rumqttc = { version = "0.25", optional = true }
+mcap = { version = "0.26", optional = true, default-features = false }
 futures-util = "0.3"
 anyhow = { workspace = true }
 toml = { workspace = true }
@@ -91,3 +92,5 @@ socketcan = ["dep:socketcan"]
 # MQTT sink: publishes each TUP point as JSON to a broker. Off by default; it needs a
 # broker to exercise (see the `mqtt` integration test).
 mqtt = ["dep:rumqttc"]
+# MCAP recording (--record-mcap). Off by default; the file opens in Foxglove and the mcap CLI.
+mcap-record = ["dep:mcap"]

@@ -121,6 +121,14 @@ plugins would have to pass on.
 - `--record FILE` appends every data point to `FILE` as NDJSON, one object per
   line. Each line is the JSON the WebSocket sends, so `jq` and any JSON-lines
   reader can read it.
+- `--record-mcap FILE` writes every data point to an MCAP file (build with
+  `--features mcap-record`). Each series is one channel named
+  `<protocol>/<device>/<point>`, the message is the point's JSON, and the log time
+  is the point's timestamp. The file is unchunked and unbuffered, so a daemon
+  that stops keeps every message; it lacks only the summary, which `mcap recover`
+  rebuilds. Checked by reading a recorded poll session with the Python `mcap`
+  package (every message present, with the right values), and by a Rust
+  round-trip test on a finished file.
 - `--detect FILE` runs every protocol's framer over a capture and prints its
   frames, points and errors, best first. It is a heuristic: a framer without a
   length field (UDS) can accept almost any byte, so read the counts, not only the order.
@@ -317,7 +325,7 @@ stream and print each data point. The daemon's default simulate target is
   raw IP, IPv4 only. It does not reassemble TCP (segments are taken in capture
   order, with no gap filling), does not reorder, and skips fragments and IPv6.
   Tested with synthetic captures; no capture from a real network has been replayed.
-  MCAP and Parquet export are not done.
+  Parquet export is not done. MCAP export is (see `--record-mcap`).
 - **Sinks are limited to the WebSocket and NDJSON files.** There is no MQTT,
   OPC UA server, InfluxDB or OpenTelemetry output.
 - **No authentication.** The WebSocket API is unauthenticated and loopback by
@@ -339,6 +347,10 @@ crates/tpt-protocol-daemon/
 │   ├── detect.rs              # protocol auto-detection (--detect)
 │   ├── mapping.rs             # [[map]] rules and the mapping stage
 │   ├── record.rs              # NDJSON recorder (--record)
+│   ├── mcap_record.rs         # MCAP recorder (--record-mcap, feature mcap-record)
+│   ├── sink.rs                # MQTT sink (--mqtt, feature mqtt)
+│   ├── anomaly.rs             # [[anomaly]] stream checks
+│   ├── pcap.rs                # pcap and pcapng reader (--replay-format pcap)
 │   ├── plugins/
 │   │   └── mod.rs             # ProtocolPlugin impls, one feature per protocol
 │   └── transport/
