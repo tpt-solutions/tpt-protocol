@@ -581,4 +581,62 @@ mod fuzz {
             let _ = parser.parse(&bytes);
         }
     }
+
+    /// A MAVLink frame with a plausible header, v1 or v2. The length field is
+    /// skewed by -2..=2 so the length checks run; the CRC is random, so the checks
+    /// that follow the header are exercised on frames that rarely pass them.
+    fn mavlink_frame() -> impl Strategy<Value = Vec<u8>> {
+        (
+            any::<bool>(),
+            any::<u8>(),
+            any::<u8>(),
+            any::<u8>(),
+            any::<u32>(),
+            proptest::collection::vec(any::<u8>(), 0..64),
+            -2i32..=2,
+            any::<u16>(),
+        )
+            .prop_map(|(v2, seq, sys, comp, msgid, payload, skew, crc)| {
+                let len = (payload.len() as i32 + skew).clamp(0, 255) as u8;
+                let mut out = if v2 {
+                    alloc::vec![0xFD, len, 0, 0, seq, sys, comp]
+                } else {
+                    alloc::vec![0xFE, len, seq, sys, comp]
+                };
+                if v2 {
+                    out.extend_from_slice(&msgid.to_le_bytes()[..3]);
+                } else {
+                    out.push(msgid as u8);
+                }
+                out.extend_from_slice(&payload);
+                out.extend_from_slice(&crc.to_le_bytes());
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a MAVLink-shaped frame.
+    fn mutated_mavlink() -> impl Strategy<Value = Vec<u8>> {
+        (mavlink_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_mavlink_never_panics(bytes in mutated_mavlink()) {
+            let _ = MavlinkParser::new().parse(&bytes);
+            let _ = MavlinkParser::new().try_parse(&bytes);
+        }
+    }
 }
