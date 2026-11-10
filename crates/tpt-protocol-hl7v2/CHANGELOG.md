@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- One data point per OBX observation. A numeric result is a float, with its unit and a
+  quality taken from the result status.
+- `Hl7Encoder` (`FrameEncoder`), with round-trip tests against the parser.
+- Structured property tests (valid messages, then mutation).
+- A differential example (`examples/diff_decode.rs`), checked against the `hl7` Python
+  library in CI.
+
+### Changed
+- The normalizer reports the real normalized values. It used to report placeholders.
+
+### Fixed
+- Byte-indexed slicing of `&str` panicked on multi-byte input. Parsing is now
+  char-boundary-safe (`str::get`), and the field separator must be ASCII.
+- A malformed segment name is skipped, the same as a short segment.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

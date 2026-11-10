@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- OCPP-J (JSON over WebSocket) parsing for OCPP 1.6 and 2.0.1: Call `[2, id, action,
+  payload]`, CallResult `[3, id, payload]` and CallError `[4, id, code, description,
+  details]`.
+- `OcppAction` covers the common 1.6 and 2.0.1 action names, with an `Other` fallback.
+- `OcppEncoder` (`FrameEncoder`): `to_bytes` encodes the same JSON, with round-trip tests.
+- Structured property tests (CALL, CALLRESULT and CALLERROR arrays, then mutation), and a
+  runnable `parse_ocpp` example.
+
+### Changed
+- Rewritten. The previous parser used an invented binary framing with length prefixes,
+  not OCPP.
+- The parser is a small scanner for the top-level JSON array. Strings are decoded,
+  including escapes, and brackets inside strings are skipped. Payloads are kept as raw
+  JSON text.
+- Message ids are at most 36 characters, and element counts are checked for each message
+  type.
+- A CallError normalizes to `Quality::Bad`.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

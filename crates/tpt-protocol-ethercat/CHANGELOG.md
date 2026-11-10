@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `EthercatEncoder` (`FrameEncoder`), with round-trip tests against the parser.
+- The whole datagram chain is parsed (the more-follows bit), and `EthercatFrame` exposes
+  every datagram in `datagrams`.
+- `try_parse` for streams: `Ok(None)` for an incomplete frame, otherwise the exact
+  consumed length.
+- Structured property tests: valid frames, then mutation.
+- Published to crates.io. Renamed from `out-protocol-ethercat` (`publish = false` removed).
+
+### Changed
+- The command codes follow IEC 61158-4-12 (APWR = 2, FPWR = 5, BWR = 8, LRD = 10,
+  LWR = 11), and the read/write variants are added.
+- The EtherCAT header is little-endian, with an 11-bit length and a type field in bits
+  12–15. Datagram fields (ADP, ADO, length flags, IRQ) are little-endian.
+- The chain must end exactly at the section length. Trailing Ethernet padding is ignored.
+- The normalizer uses the first datagram.
+
+### Fixed
+- The command table and byte order did not match the standard. Datagram chains were not
+  walked, so only one datagram was read.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

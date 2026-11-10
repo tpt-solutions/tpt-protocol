@@ -1,114 +1,103 @@
 # tpt-protocol-matter-thread
 
-Matter / Thread smart-home connectivity protocol parser for the
-[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
+Matter (CSA smart-home standard) message parser, validator, and TUP normalizer for the
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite. Matter runs over
+Thread (IPv6 over IEEE 802.15.4) or Wi-Fi and Ethernet.
 
 ## Overview
 
-Matter (CSA) and its Thread networking layer are the dominant smart-home
-interoperability standards. TPT provides a memory-safe `#![no_std]` + `alloc`
-parser for a compact Matter/Thread command frame so device clusters and
-interactions can be decoded, connection health validated, and normalised into
-the shared TUP telemetry envelope — without a `std`/async stack.
+Matter exchanges messages made of a message header, a protocol header and an Interaction
+Model payload encoded in Matter TLV. TPT implements the three layers of the stack that
+matter for telemetry: Matter TLV, the message and protocol headers for unsecured
+(session 0) messages, and the Interaction Model `ReportData` that carries attribute
+values. The crate is `#![no_std]` + `alloc`.
 
 ## Features
 
-- Binary Matter/Thread frame parsing via `FrameParser` (protocol layer, cluster
-  id, command id, endpoint, data version, interaction type, TLV payload).
-- Cluster id decoding for OnOff (0x0006), LevelControl (0x0008),
-  TemperatureMeasurement (0x0402), OccupancySensing (0x0406), plus a catch-all
-  `ClusterId::Other(u16)`.
-- Interaction type decoding: Read (0), Write (1), Invoke (2), Subscribe (3).
-- A simplified TLV value decoder supporting Bool / Int / Float / Text / Bytes / Null.
-- Connection health validation via the `StateValidator` trait.
-- TUP normalisation via the `DataNormalizer` trait, mapping frames to `tup::DataPoint`s.
-- `#![no_std]` + `alloc` support.
+- Matter TLV decoding (Appendix A): all element types, the context, profile and
+  fully-qualified tag forms, and nested containers with a depth limit. Reserved element
+  types and trailing bytes are errors.
+- Message header and protocol header for unsecured (session 0) messages. Secured payloads
+  are reported as encrypted, not decoded.
+- Interaction Model `ReportData`, decoded into attribute reports: endpoint, cluster,
+  attribute and value.
+- `MatterParser` as `FrameParser` and a `decode_tlv` helper for raw TLV.
+- Connection-state validation via `StateValidator` (`MatterValidator`).
+- TUP normalisation via `DataNormalizer` (`MatterNormalizer`). `normalize_all` gives one
+  point per scalar attribute. Unsigned values above `i64::MAX` are errors.
+- `#![no_std]` + `alloc` (heap collections only; no `std`).
 - `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
+  Structured generators build valid TLV and messages, then mutate them.
 
 ## Architecture
 
-`MatterParser` decodes a fixed binary layout defined in `MatterFrame`:
+The parser works in three layers:
 
-```
-[0]      protocol layer       (0 = Matter, 1 = Thread)  -> ProtocolLayer
-[1..3]   cluster id           (big-endian u16)          -> ClusterId
-[3..5]   command id           (big-endian u16)
-[5..7]   endpoint             (big-endian u16)
-[7..11]  data version         (big-endian u32)
-[11]     interaction type      (0..3)                   -> InteractionType
-[12..]   TLV-like data        (tag byte + typed value)  -> MatterData
-```
+1. **TLV** (`decode_tlv`, `TlvTag`, `TlvValue`): element control byte, tag form, length and
+   value, with nested containers.
+2. **Headers**: the message header (flags, session id, message counter, source and
+   destination node ids when present) and the protocol header (exchange flags, opcode,
+   exchange id, protocol id). Session 0 messages are decoded. Other sessions are encrypted.
+3. **Interaction Model**: a `ReportData` opcode is decoded into `AttributeReport`s.
 
-The TLV tag byte selects the value encoding: `0` Bool (1 byte), `1` Int
-(8-byte big-endian `i64`), `2` Float (8-byte big-endian `f64`), `3` Text
-(2-byte big-endian length + UTF-8), `4` Bytes (2-byte big-endian length +
-octets), `5` Null. Out-of-range tag or truncation returns `Error::Parse`.
+`MatterFrame` holds the headers and the attribute reports, or marks the payload as
+encrypted.
 
-`MatterValidator` validates a `MatterConnectionState` (connected flag,
-`fabric_id`, `node_id`). `MatterNormalizer` emits a `DataPoint` with
-`device_id = "matter/<Cluster>/ep<endpoint>"` and `point_id = "cmd:<command_id>"`,
-mapping `MatterData` onto the corresponding `TupValue`.
+`MatterNormalizer` produces:
+
+- `device_id = "matter:<node id>/ep<endpoint>"`. The node id is in hex.
+- `point_id = "<cluster>/0x<attribute id>"`, for example `OnOff/0x0000`. The cluster is
+  named when it is known, and in hex otherwise.
+- `value` from the attribute's TLV type.
 
 ## Usage
 
+A complete, runnable example decodes a ReportData message and normalizes it:
+
+```sh
+cargo run -p tpt-protocol-matter-thread --example parse_matter
+```
+
 ```rust
-use tpt_protocol_core::{FrameParser, DataNormalizer};
-use tpt_protocol_matter_thread::{MatterParser, MatterNormalizer};
+use tpt_protocol_core::{DataNormalizer, FrameParser};
+use tpt_protocol_matter_thread::{MatterNormalizer, MatterParser};
 
-fn main() {
-    // Matter / OnOff cluster / Read interaction / Bool TLV = true
-    let mut raw: Vec<u8> = vec![
-        0,                       // protocol: Matter
-        0x00, 0x06,             // cluster: OnOff
-        0x00, 0x00,             // command id
-        0x00, 0x01,             // endpoint 1
-        0, 0, 0, 1,             // data version
-        0,                      // interaction: Read
-        0,                      // TLV type: Bool
-        1,                      // value: true
-    ];
-
-    let parser = MatterParser;
-    let frame = parser.parse(&raw).unwrap();
-    assert_eq!(frame.cluster_id, tpt_protocol_matter_thread::ClusterId::OnOff);
-
-    let normalizer = MatterNormalizer;
-    let dp = normalizer.normalize(&frame).unwrap();
-    assert_eq!(dp.source_protocol, tpt_protocol_tup::SourceProtocol::MatterThread);
-    assert_eq!(dp.value, tpt_protocol_tup::TupValue::Bool(true));
-}
+let frame = MatterParser.parse(&wire)?;
+let points = MatterNormalizer.normalize_all(&frame)?;
+// points[0].point_id == "OnOff/0x0000" for an OnOff attribute report
 ```
 
 ## `no_std`
 
-This crate is `#![no_std]` and uses `alloc` (for `String`/`Vec` and the
-`format!` device-id builder). It works on alloc-capable embedded targets.
+This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`, `String`,
+`format!`). It works in embedded environments that provide an allocator.
 
 ## Crate layout
 
-- `src/lib.rs` — `ProtocolLayer`, `InteractionType`, `ClusterId`, `MatterData`,
-  `MatterFrame`, `MatterParser` (binary + TLV decoder), `MatterValidator` /
-  `MatterConnectionState`, `MatterNormalizer`, unit/fuzz tests.
+- `src/lib.rs` — `TlvTag`, `TlvValue`, `decode_tlv`, `AttributeReport`, `MatterFrame`,
+  `MatterParser` (`FrameParser`), `MatterConnectionState` + `MatterValidator`
+  (`StateValidator`), `MatterNormalizer` (`DataNormalizer`), unit tests, and the
+  `proptest` `mod fuzz`.
+- `examples/parse_matter.rs` — runnable parse-and-normalize example.
 
 ## Status / Conformance
 
-- **Implemented:** parsing of the simplified Matter/Thread binary frame above,
-  the four well-known clusters plus a catch-all, the four interaction types, the
-  six TLV value kinds, state validation, TUP normalisation, and `proptest` fuzzing.
-- **Known gaps / TODOs:**
-  - This is a *simplified* frame model for TPT's telemetry pipeline, **not** the
-    full Matter wire protocol: it does not implement real Matter TLV/CBOR tag
-    structures, the ZCL attribute/command encoding, Thread mesh/security headers,
-    or group/session addressing.
-  - Normalised `timestamp` is `0`; callers must supply a real timestamp.
-  - `MatterData::Null` normalises to `TupValue::Int(0)`; downstream consumers
-    cannot distinguish a real `0` from a null.
+- **Unsecured messages only.** Session-keyed (secured) payloads are reported as encrypted.
+  Decryption and the session keys are outside this crate.
+- **Interaction Model opcodes are unverified.** The opcode values follow the
+  connectedhomeip implementation. They have not been checked against a real capture.
+- **Only ReportData is decoded.** Other Interaction Model messages (for example invoke
+  commands and subscriptions) are not decoded.
+- **No Thread or Wi-Fi transport.** The crate parses a captured message.
+- Normalised `timestamp` is `0`; callers must supply a real timestamp.
 
 ## Related crates
 
-- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `StateValidator` / `DataNormalizer` traits this crate implements.
+- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `FrameEncoder` /
+  `StateValidator` / `DataNormalizer` traits this crate implements.
 - [`tpt-protocol-tup`](../tpt-protocol-tup) — the normalized envelope this crate emits.
 
 ## License
 
-Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE) at your option.
+Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE)
+at your option.

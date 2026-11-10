@@ -1,84 +1,69 @@
 # tpt-protocol-isobus
 
-ISO 11783 (ISOBUS) agricultural-vehicle protocol parsing, validation, and TUP
-normalisation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
-
-ISOBUS is the in-cab network standard for agricultural and forestry equipment,
-built on a 29-bit CAN identifier shared with SAE J1939. TPT decodes the CAN ID into
-priority/addressing fields, resolves the Parameter Group Number (PGN), and normalises
-the frame into a TUP data point keyed by source address and implement.
+ISOBUS (ISO 11783) agricultural-implement protocol parser, validator, and TUP
+normalizer for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 
-ISO 11783 (ISOBUS) lets tractors, implements, and terminals exchange task data,
-control commands, and working-set management over CAN. Its 29-bit identifier uses the
-same priority/DP/PF/PS/SA layout as J1939, so TPT shares the same decoding approach
-while recognising the ISOBUS-specific PGNs. TPT ingests ISOBUS traffic so farm
-equipment telemetry can be unified with the rest of the pipeline.
+ISOBUS is the implement-to-tractor communication standard built on J1939's CAN
+transport. It defines the Parameter Groups (PGNs) for implement control and the
+identity of each electronic control unit (ECU). TPT implements the 29-bit CAN
+identifier, the PGN, the ECU NAME carried in Address Claimed frames, and the
+transport-protocol control messages, in a `#![no_std]` + `alloc` crate that depends
+only on `tpt-protocol-core` and `tpt-protocol-tup`.
 
 ## Features
 
-- 29-bit ISOBUS CAN-ID decoding: priority, data page, PDU Format (PF), PDU Specific
-  (PS), and Source Address (SA).
-- Parameter Group Number (PGN) resolution, including the PDU1/PDU2 distinction
-  (`PF >= 240` includes PS in the PGN).
-- Recognition of ISOBUS PGNs: Request for Rep (0xEC00), PTO (0xFEBA),
-  Working Set Master (0xFE12), Task Controller (0xFEAB), plus `Raw(u32)`.
-- Payload bounds checking: frames require at least 4 bytes (the CAN ID) and at most
-  8 payload bytes.
-- Implement-ID and device-class extraction from the payload.
-- Connection-state validation via `StateValidator` (`IsobusValidator`).
-- TUP normalisation via `DataNormalizer` (`IsobusNormalizer`).
-- `#![no_std]` + `alloc` support.
-- `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary
-  input.
+- 29-bit identifier decoding: priority, data page, PDU format (PF), PDU specific (PS)
+  and source address (SA). PDU1 frames (PF below 240) carry no destination in the PGN.
+- Named PGNs (`IsobusPgn`): TP.CM (0xEC00), TP.DT (0xEB00), Request (0xEA00), Address
+  Claimed (0xEE00), and the engine and vehicle PGNs that the normalizer decodes, plus
+  `Raw`.
+- `IsobusName`: the 64-bit ECU NAME in Address Claimed frames, decoded with the ISO
+  11783-5 bit layout (identity number, manufacturer code, ECU and function instance,
+  function, device class, industry group, arbitrary-address capability).
+- Signals for EEC1, ET1, CCVS and fuel economy, in their units, matching the J1939
+  crate. Other PGNs give their payload as bytes.
+- `IsobusEncoder`: wire bytes from a frame, with round-trip tests against the parser.
+- Connection-state validation via `StateValidator` (`IsobusValidator`), which rejects
+  a zero NAME.
+- TUP normalisation via `DataNormalizer` (`IsobusNormalizer`). A frame with no payload
+  is an error, not a zero.
+- `#![no_std]` + `alloc` (heap collections only; no `std`).
+- `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
 
 ## Architecture
 
-The crate parses a single `IsobusFrame` from a `[u8]` of `CAN_ID (4 bytes, big-endian)
-+ payload`:
+The input is a 4-byte big-endian CAN identifier followed by the payload (up to 8
+bytes).
 
-- `IsobusFrame` — `can_id: u32`, `priority`, `dp`, `pf`, `ps`, `sa`, `pgn:
-  IsobusPgn`, `payload: Vec<u8>`, `implement_id: u16`, `device_class: u8`.
-- `IsobusPgn` maps the resolved PGN to `RequestForRep` (0xEC00), `Pto` (0xFEBA),
-  `WorkingSetMaster` (0xFE12), `TaskController` (0xFEAB), or `Raw(u32)`.
-- `IsobusParser` implements `FrameParser`. It reads the big-endian `u32` CAN ID and
-  derives fields via bit shifts: `priority = (id >> 26) & 0x07`, `dp = (id >> 24) &
-  0x01`, `pf = (id >> 16) & 0xFF`, `ps = (id >> 8) & 0xFF`, `sa = id & 0xFF`. The
-  PGN is `(dp << 16) | (pf << 8) | (ps)` when `pf >= 240` (PDU2) and `(dp << 16) |
-  (pf << 8)` otherwise (PDU1). Payload is `bytes[4..]`, capped at 8 bytes. The
-  `implement_id` comes from payload bytes `0..1` and `device_class` from byte `2`.
-- `IsobusValidator` validates `IsobusState` (`connected`, `source_address`,
-  `implement_id`, `last_ok_timestamp`, `error_count`): it errors if not connected, if
-  `source_address` is `0xFE` or `0xFF` (reserved/global), if `implement_id == 0`, or
-  if `error_count > 15`.
-- `IsobusNormalizer` emits `device_id = "isobus:<sa>:<implement_id>"`,
-  `point_id = "pgn:<pgn>"`, and `value`: the first 4 payload bytes as `Int` when
-  present, otherwise `Bytes(payload)`, otherwise `Int(0)`.
+- `IsobusParser` derives `priority = (id >> 26) & 0x07`, `dp`, `pf`, `ps` and `sa`.
+  The PGN includes PS only for PDU2 frames. It keeps the ECU NAME only for Address
+  Claimed (`0xEE00`) frames.
+- `IsobusFrame` holds `can_id`, `priority`, `dp`, `pf`, `ps`, `sa`, `pgn`, `payload`
+  and `name: Option<IsobusName>`.
+- `IsobusState` carries the connection flag, source address, the raw `ecu_name`,
+  timestamp and error count. The validator rejects a zero NAME.
+- `IsobusNormalizer` produces `device_id = "isobus:0x<sa>"`, extended with the
+  manufacturer code and identity from the NAME when it is known. Point ids are
+  `pgn:<name>.<signal>` for decoded signals (for example `pgn:EEC1.engine_speed`) and
+  `pgn:<name>.payload` for other PGNs.
 
 ## Usage
 
+A complete, runnable example parses an EEC1-style frame and normalizes it:
+
+```sh
+cargo run -p tpt-protocol-isobus --example parse_isobus
+```
+
 ```rust
 use tpt_protocol_core::{DataNormalizer, FrameParser};
-use tpt_protocol_tup::SourceProtocol;
 use tpt_protocol_isobus::{IsobusNormalizer, IsobusParser};
 
-fn main() {
-    // 29-bit CAN ID: priority=3, PF=0xEC, PS=0x00, SA=0x20, plus 8 payload bytes
-    let can_id = (0x03u32 << 26) | ((0xECu32) << 16) | ((0x00u32) << 8) | 0x20;
-    let mut bytes = can_id.to_be_bytes().to_vec();
-    bytes.extend_from_slice(&[0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07]);
-
-    let parser = IsobusParser::new();
-    let frame = parser.parse(&bytes).unwrap();
-    assert_eq!(frame.pgn, tpt_protocol_isobus::IsobusPgn::RequestForRep);
-    assert_eq!(frame.implement_id, 0x0001);
-
-    let normalizer = IsobusNormalizer::new();
-    let dp = normalizer.normalize(&frame).unwrap();
-    assert_eq!(dp.source_protocol, SourceProtocol::Isobus);
-    assert_eq!(dp.device_id, "isobus:0x20:0x0001");
-}
+let frame = IsobusParser::new().parse(&wire)?;
+let points = IsobusNormalizer::new().normalize_all(&frame)?;
+// points[0].point_id == "pgn:EEC1.engine_speed" for a decoded EEC1 frame
 ```
 
 ## `no_std`
@@ -88,28 +73,32 @@ This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`, `Str
 
 ## Crate layout
 
-- `src/lib.rs` — the entire crate: ISOBUS CAN-ID/frame types, the `IsobusParser`,
-  `IsobusValidator`, `IsobusNormalizer`, and unit + `proptest` fuzz tests
-  (PGN decoding, payload bounds, address validation).
+- `src/lib.rs` — `IsobusPgn`, `IsobusName`, `IsobusFrame`, `IsobusParser`
+  (`FrameParser`), `IsobusEncoder` (`FrameEncoder`), `IsobusState` +
+  `IsobusValidator` (`StateValidator`), `IsobusNormalizer` (`DataNormalizer`), unit
+  tests, and the `proptest` `mod fuzz`.
+- `examples/parse_isobus.rs` — runnable parse-and-normalize example.
 
 ## Status / Conformance
 
-- Implemented: 29-bit CAN-ID decoding, PGN resolution (PDU1/PDU2), the four named
-  ISOBUS PGNs, payload bounds checking, implement-ID/device-class extraction, state
-  validation, and TUP normalisation.
-- Known gaps / TODOs:
-  - No multi-packet transport-protocol (TP) reassembly for PGNs larger than 8 bytes
-    (e.g. working-set / task-controller messages that span multiple CAN frames).
-  - No interpretation of PGN-specific payload layouts (only the first 4 bytes are
-    surfaced as a raw integer); the daemon is simulation-only (no real CAN transport,
-    see workspace `TODO.md`).
+- **Single frames only.** Transport-protocol (TP.CM / TP.DT) control messages are
+  parsed, but the multi-packet payload is not reassembled, so a message larger than
+  8 bytes is not decoded as one value.
+- **A small signal set.** Only EEC1, ET1, CCVS and the fuel-economy PGN are decoded.
+  Working-set and task-controller messages are carried as bytes.
+- **Identity is the NAME.** `implement_id` and `device_class` are not read from payload
+  bytes; they come from the ECU NAME in Address Claimed frames only.
+- Normalised `timestamp` is `0`; callers must supply a real timestamp.
 
 ## Related crates
 
-- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `StateValidator` / `DataNormalizer` traits this crate implements.
+- [`tpt-protocol-j1939`](../tpt-protocol-j1939) — the J1939 transport and signal set that
+  ISOBUS builds on.
+- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `FrameEncoder` /
+  `StateValidator` / `DataNormalizer` traits this crate implements.
 - [`tpt-protocol-tup`](../tpt-protocol-tup) — the normalized envelope this crate emits.
-- [`tpt-protocol-j1939`](../tpt-protocol-j1939) — shares the 29-bit CAN-ID layout; the heavy-duty counterpart to ISOBUS.
 
 ## License
 
-Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE) at your option.
+Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE)
+at your option.

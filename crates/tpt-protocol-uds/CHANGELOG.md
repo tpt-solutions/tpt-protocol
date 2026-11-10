@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Negative responses (`0x7F`): the requested SID and the negative response code. They
+  normalize to a `Bad`-quality point.
+- Services: ReadDTCInformation, RoutineControl, RequestDownload, RequestUpload,
+  TransferData, RequestTransferExit and ControlDTCSetting, with their responses.
+- Suppress-positive-response: bit 7 of a request's sub-function.
+- `UdsEncoder` (`FrameEncoder`), with round-trip tests. Structured property tests, a
+  differential example (`examples/diff_decode.rs`) checked against udsoncan in CI, and a
+  runnable `parse_uds` example.
+
+### Changed
+- `0x14` takes a group of DTC, not a sub-function.
+- Responses echo the sub-function unchanged.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

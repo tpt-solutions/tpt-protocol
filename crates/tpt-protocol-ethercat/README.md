@@ -1,131 +1,108 @@
 # tpt-protocol-ethercat
 
-High-speed EtherCAT industrial factory-automation protocol parser, validator, and
-TUP normalizer for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
-suite.
+EtherCAT frame parsing, encoding, validation, and TUP normalisation for the
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 Published to crates.io (`publish` unset).
 
 ## Overview
 
-EtherCAT is a real-time Ethernet fieldbus used for motion control and I/O in
-machine automation. A single Ethernet frame (EtherType `0x88A4`) carries one or
-more *datagrams* that are processed on-the-fly by slaves as the frame passes
-through the bus. TPT implements the EtherCAT datagram layer so that captured
-link-layer payloads can be validated for connection health and normalized into
-unified telemetry points.
+EtherCAT is a real-time Ethernet fieldbus for motion control and I/O. A single
+Ethernet frame carries one or more datagrams that the slaves process on the fly, and
+each datagram ends with a working counter (WKC). TPT implements a from-scratch,
+`#![no_std]` + `alloc` parser for the EtherCAT telegram, so captured frames can be
+decoded, the datagram chain walked, and the result normalized into the shared TUP
+envelope. `ethercrab` exposes no standalone frame parser to wrap, so this crate is
+its own implementation.
 
 ## Features
 
-- EtherCAT datagram frame parsing (EtherType `0x88A4` payload; Ethernet header
-  assumed already stripped).
-- Validation of the EtherCAT header length/type and the 10-byte datagram header,
-  with truncation guards for the data + working-counter (WKC) region.
-- Decoding of all eight standard datagram commands (`EcCmd`): APRD, APWR, FPRD,
-  FPWR, BRD, BWR, LRD, LWR — plus an `Unknown(u8)` catch-all.
-- Connection-health validation via `StateValidator` (`EthercatValidator`) checking
-  connection, OPERATIONAL state, non-zero slave count, and a consecutive-error
+- EtherCAT header (length and type) and the full datagram chain, walked by the
+  more-follows bit. The chain must end exactly at the section length; trailing
+  Ethernet padding is ignored.
+- Datagram commands per IEC 61158-4-12 (`EcCmd`): APRD, APWR, APRW, FPRD, FPWR, FPRW,
+  BRD, BWR, BRW, LRD, LWR, LRW, ARMW, FRMW, plus `Unknown(u8)`.
+- Little-endian header and datagram fields (ADP, ADO, length flags, IRQ) and the
+  working counter.
+- `try_parse` for streams: `Ok(None)` for an incomplete frame, otherwise the exact
+  consumed length.
+- `EthercatEncoder`: wire bytes from a frame, with round-trip tests against the parser.
+- Connection-health validation via `StateValidator` (`EthercatValidator`), checking
+  connection, OPERATIONAL state, a non-zero slave count, and a consecutive-error
   threshold.
-- TUP normalisation via `DataNormalizer` (`EthercatNormalizer`) mapping each frame
-  to a `tup::DataPoint`.
+- TUP normalisation via `DataNormalizer` (`EthercatNormalizer`).
 - `#![no_std]` + `alloc` (heap collections only; no `std`).
-- `proptest` fuzz tests (`mod fuzz`) asserting `FrameParser::parse` never panics on
-  arbitrary input.
+- `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
 
 ## Architecture
 
-The parser operates on the **Ethernet payload starting at the EtherCAT header**
-(the outer Ethernet `0x88A4` EtherType is expected to already be stripped by the
-transport layer).
+The parser works on the Ethernet payload that starts at the EtherCAT header. The
+outer Ethernet frame, with EtherType `0x88A4`, is removed by the transport layer.
 
-- **EtherCAT header** (`EthercatParser::parse`, `src/lib.rs`): `eth_length`
-  (2 bytes BE) + `eth_type` (1 byte). A minimum of 3 bytes is required.
-- **Datagram header** (10 bytes): `datagram_cmd` (1 byte, decoded by
-  `EcCmd::from_u8`), `datagram_index` (1 byte), `addressing` (4 bytes BE, the
-  auto-increment / configured / logical address), `datagram_length` (2 bytes BE),
-  and 2 reserved bytes. A minimum of 13 bytes is required before the datagram
-  header is read.
-- **Data + WKC**: the payload begins at offset 13 and is `datagram_length` bytes
-  long; the **working counter (WKC)** follows it and is read little-endian. A
-  length guard (`wkc_start + 2`) prevents out-of-bounds indexing on truncated
-  frames.
+- **EtherCAT header** (2 bytes): a little-endian 11-bit length and a type field in
+  bits 12–15.
+- **Datagrams**: each has a command, index, ADP/ADO addressing, a length field with
+  the more-follows bit, an IRQ field, the data, and a little-endian working counter.
+  The parser checks each datagram's bounds before reading it.
 
-The decoded result is the `EthercatFrame` struct
-(`eth_length`, `eth_type`, `datagram_cmd`, `datagram_index`, `addressing`,
-`datagram_length`, `data`, `working_counter`).
+The decoded result is the `EthercatFrame` struct (`eth_length`, `eth_type`,
+`datagrams: Vec<EcDatagram>`). Each `EcDatagram` has `cmd`, `index`, `adp`, `ado`,
+`more`, `circulating`, `irq`, `data` and `working_counter`.
 
 `EthercatValidator` consumes an `EthercatState` (`connected`, `slave_count`,
-`operational`, `last_ok_timestamp`, `error_count`) and rejects the state when the
-device is disconnected, not `OPERATIONAL`, has zero slaves, or has more than 10
-consecutive errors.
+`operational`, `last_ok_timestamp`, `error_count`) and rejects the state when the device
+is disconnected, not `OPERATIONAL`, has zero slaves, or has more than 10 consecutive
+errors.
 
-`EthercatNormalizer` produces a `DataPoint` keyed by `device_id =
-"ethercat:master"` and `point_id = "cmd:{command}"`; the value is the raw
-`data` bytes when present, otherwise the integer WKC.
+`EthercatNormalizer` produces a `DataPoint` keyed by `device_id = "ethercat:master"` and
+`point_id = "cmd:<command>"`. The value is the first datagram's data as bytes, or its
+working counter when there is no data.
 
 ## Usage
 
+A complete, runnable example parses an LRD datagram and normalizes it:
+
+```sh
+cargo run -p tpt-protocol-ethercat --example parse_ethercat
+```
+
 ```rust
-use tpt_protocol_core::{FrameParser, DataNormalizer};
-use out_protocol_ethercat::{EthercatParser, EthercatNormalizer, EcCmd};
+use tpt_protocol_core::{DataNormalizer, FrameParser};
+use tpt_protocol_ethercat::{EthercatNormalizer, EthercatParser};
 
-fn main() {
-    // Build an FPRD datagram (cmd=4) with 2 data bytes + WKC.
-    // EtherCAT header: length(2) + type(1) | datagram: cmd+idx+addr(4)+len(2)+reserved(2)+data+WKC(LE)
-    let mut raw: Vec<u8> = Vec::new();
-    let eth_len: u16 = (10u16 + 2 + 2).to_be_bytes()[0] << 8
-        | (10u16 + 2 + 2).to_be_bytes()[1];
-    raw.extend_from_slice(&eth_len.to_be_bytes());
-    raw.push(0x01);                 // eth_type
-    raw.push(4);                    // FPRD
-    raw.push(0x01);                 // datagram_index
-    raw.extend_from_slice(&0x1000u32.to_be_bytes()); // addressing
-    raw.extend_from_slice(&2u16.to_be_bytes());      // datagram_length
-    raw.extend_from_slice(&[0x00, 0x00]); // reserved
-    raw.extend_from_slice(&[0xAA, 0xBB]); // data
-    raw.extend_from_slice(&0x0000u16.to_le_bytes()); // WKC
-
-    let parser = EthercatParser::new();
-    let frame = parser.parse(&raw).unwrap();
-    assert_eq!(frame.datagram_cmd, EcCmd::Fprd);
-    assert_eq!(frame.addressing, 0x1000);
-
-    let normalizer = EthercatNormalizer::new();
-    let dp = normalizer.normalize(&frame).unwrap();
-    assert_eq!(dp.source_protocol, tpt_protocol_tup::SourceProtocol::Ethercat);
-    assert_eq!(dp.device_id, "ethercat:master");
-    assert_eq!(dp.point_id, "cmd:FPRD");
-}
+let frame = EthercatParser::new().parse(&wire)?;
+let point = EthercatNormalizer::new().normalize(&frame)?;
+// point.point_id == "cmd:LRD"
 ```
 
 ## `no_std`
 
-This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`,
-`String`, `format!`). It works in embedded environments that provide an allocator.
+This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`, `String`,
+`format!`). It works in embedded environments that provide an allocator.
 
 ## Crate layout
 
-- `src/lib.rs` — the full implementation: `EcCmd` enum, `EthercatFrame` struct,
-  `EthercatParser` (`FrameParser`), `EthercatState` + `EthercatValidator`
-  (`StateValidator`), `EthercatNormalizer` (`DataNormalizer`), unit tests, and the
-  `proptest` `mod fuzz`.
+- `src/lib.rs` — `EcCmd`, `EcDatagram`, `EthercatFrame`, `EthercatParser`
+  (`FrameParser`), `EthercatEncoder` (`FrameEncoder`), `EthercatState` +
+  `EthercatValidator` (`StateValidator`), `EthercatNormalizer` (`DataNormalizer`),
+  unit tests, and the `proptest` `mod fuzz`.
+- `examples/parse_ethercat.rs` — runnable parse-and-normalize example.
 
 ## Status / Conformance
 
-- **Single-datagram only.** The parser decodes one datagram per frame. Real
-  EtherCAT telegrams may chain multiple datagrams (each followed by its own WKC);
-  multi-datagram telegrams are not yet handled — only the first datagram's data and
-  WKC are extracted.
-- **No FCS check.** The Ethernet-level frame check sequence is not validated here;
-  the parser trusts the transport layer to have delivered an intact frame.
-- **Addressing mode not distinguished.** `addressing` is decoded as a raw 32-bit
-  value; auto-increment vs. configured-address vs. logical addressing is not
-  interpreted.
+- **Multi-datagram telegrams are parsed.** The normalizer reports only the first
+  datagram. Per-datagram points are not produced.
+- **No FCS check.** The Ethernet frame check sequence is not validated here; the
+  parser trusts the transport layer to have delivered an intact frame.
+- **Addressing is not interpreted.** ADP and ADO are decoded as numbers. Auto-increment,
+  configured-address and logical addressing are not resolved to slaves.
+- **Process data is not mapped.** The crate does not know the slave process-data
+  objects, so the data bytes are carried as raw bytes.
 
 ## Related crates
 
-- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `StateValidator` /
-  `DataNormalizer` traits this crate implements.
+- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `FrameEncoder` /
+  `StateValidator` / `DataNormalizer` traits this crate implements.
 - [`tpt-protocol-tup`](../tpt-protocol-tup) — the normalized envelope this crate emits.
 
 ## License

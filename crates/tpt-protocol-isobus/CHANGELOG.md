@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `IsobusName`: the 64-bit ECU NAME from Address Claimed frames (`0xEE00`), decoded with
+  the ISO 11783-5 bit layout. A test builds each field at its bit position.
+- `IsobusEncoder` (`FrameEncoder`), with round-trip tests against the parser.
+- Named PGNs for TP.CM (`0xEC00`), TP.DT (`0xEB00`) and Request.
+- Signals for EEC1, ET1, CCVS and fuel economy, in their units, with `normalize_all`.
+  Other PGNs give their payload as bytes.
+- Structured property tests, and a runnable `parse_isobus` example.
+
+### Changed
+- Identity (`implement_id`, `device_class`) comes from the NAME in Address Claimed
+  frames, not from arbitrary payload bytes. `implement_id` is little-endian.
+- PDU1 frames (PF below 240) do not include the destination address in the PGN, the same
+  as J1939.
+
+### Fixed
+- A frame with no payload is an error, not a zero.
+- The TP.CM and TP.DT names, and the Request PGN, were wrong in the earlier table.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

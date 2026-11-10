@@ -23,6 +23,8 @@ data points keyed by message type and ID. This crate is `#![no_std]` (the popula
   and typed option extraction (`CoapOption`): UriPath, ContentFormat, MaxAge, ETag,
   Observe, and `Other`.
 - Payload-marker (`0xFF`) delimiting and extraction.
+- `CoapEncoder`: wire bytes from a frame (options, payload marker, payload), with
+  round-trip tests against the parser.
 - Connection-health validation via `StateValidator` (`CoapValidator`) checking
   connection state.
 - TUP normalisation via `DataNormalizer` (`CoapNormalizer`) mapping each frame to a
@@ -104,8 +106,10 @@ This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`,
   used to drive subscription state beyond the `observe_counter` field.
 - **Uri-Query / other options carried raw.** Only UriPath, ContentFormat, MaxAge,
   ETag, and Observe are typed; remaining options arrive as `CoapOption::Other`.
-- **Non-UTF8 UriPath tolerated.** A non-UTF8 Uri-Path segment is stored as an empty
-  string rather than rejected (the parser does not fail the frame on encoding).
+- **Strict option checks.** Option numbers use checked arithmetic, so an overflow is a
+  parse error. The `0xFF` payload marker must be followed by at least one byte
+  (RFC 7252 §3). Each Uri-Path option must be one UTF-8 segment. Max-Age (4 bytes),
+  Observe (3) and Content-Format (2) reject longer values rather than truncating them.
 - This crate is `no_std`; real CoAP transport (UDP sockets, `tokio`) is out of scope.
 
 ## Related crates

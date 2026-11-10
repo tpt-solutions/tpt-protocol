@@ -1,118 +1,99 @@
 # tpt-protocol-opcua
 
-OPC UA (Open Platform Communications Unified Architecture) Industry 4.0 protocol
-parser for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
+OPC UA Binary (UA-TCP) message parser, validator, and TUP normalizer for the
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 
-OPC UA is the leading industrial-interoperability standard for secure,
-platform-independent exchange of process data between PLCs, SCADA/Historians, and
-enterprise systems. TPT provides a memory-safe `#![no_std]` + `alloc` parser for
-the OPC UA binary message header and key secure-channel/MSG fields so traffic can
-be decoded, connection health validated, and normalised into the shared TUP
-telemetry envelope.
+OPC UA is the platform-independent industrial interoperability standard. Its Binary
+encoding runs over TCP as UA-TCP messages. Each message has a header, a secure-channel
+or session part, and a service body that is an `ExtensionObject`. TPT implements the
+message header, the chunk types, the secure-channel identifiers and the ExtensionObject
+TypeId, in a `#![no_std]` + `alloc` crate, so captured messages can be validated and
+normalized into the shared TUP envelope.
 
 ## Features
 
-- OPC UA binary message-header parsing via `FrameParser`.
-- Message-type decoding: HEL (Hello), ACK (Acknowledge), ERR (Error), MSG
-  (Message), OPN (OpenSecureChannel), CLO (CloseSecureChannel), plus `Unknown`.
-- Extraction of the message size, secure-channel header
-  (channel id, token id, sequence number, request id), and — for MSG frames —
-  service id and node id from the request body.
-- Connection health validation via the `StateValidator` trait.
-- TUP normalisation via the `DataNormalizer` trait, mapping frames to `tup::DataPoint`s.
-- `#![no_std]` + `alloc` support.
+- UA-TCP message header: message type and chunk type (`F`, `C`, `A`), and the message
+  size. The message size must equal the frame length, so bytes after a message are never
+  read as its payload.
+- OPC UA Binary is little-endian throughout.
+- Secure-channel and token identifiers, the request id, the sequence number, and the
+  service body.
+- The service body of a MSG chunk is decoded as an `ExtensionObject`: its TypeId
+  (two-byte, four-byte and numeric NodeId forms), its encoding byte and its
+  length-prefixed body.
+- `OpcuaEncoder`: wire bytes from a frame, with round-trip tests against the parser.
+- `try_parse` for streams: `Ok(None)` for an incomplete message, otherwise the consumed
+  length.
+- Connection-state validation via `StateValidator` (`OpcuaValidator`).
+- TUP normalisation via `DataNormalizer` (`OpcuaNormalizer`).
+- `#![no_std]` + `alloc` (heap collections only; no `std`).
 - `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
+  Structured generators build valid messages, then mutate them.
 
 ## Architecture
 
-`OpcuaParser` decodes the OPC UA binary header:
+`OpcuaParser::parse` reads the 8-byte header, validates the chunk and message types, then
+reads the channel and token identifiers and the sequence and request ids. The service
+body follows. The decoded result is the `OpcuaFrame` struct, which holds
+`message_type`, `chunk_type`, `message_size`, `channel_id`, `token_id`,
+`sequence_num`, `request_id`, `service_id`, `type_namespace` and `payload`.
 
-```
-[0..3]   message type       (ASCII: HEL/ACK/ERR/MSG/OPN/CLO) -> OpcuaMessageType
-[3]      chunk type         (e.g. 'F' = final)
-[4..8]   message size       (big-endian u32; must fit the buffer)
-[8..24]  secure-channel hdr (channel id, token id, sequence num, request id)  // if >= 24 bytes
-[24..]   MSG body: service id (u32) + node id (u32) + payload                 // MSG frames, if >= 32 bytes
-```
+`OpcuaNormalizer` produces:
 
-The secure-channel fields and the MSG service/node id are only read when the
-buffer is long enough; shorter buffers yield zeroed header fields and `None`
-service/node ids. `message_size` is bounds-checked against the buffer length.
-
-`OpcuaFrame` exposes `message_type`, `chunk_type`, `message_size`, `channel_id`,
-`token_id`, `sequence_num`, `request_id`, `service_id`, `node_id`, and `payload`.
-`OpcuaValidator` validates an `OpcuaState` (connected flag, non-zero `channel_id`
-and `token_id`, `error_count` ≤ 8). `OpcuaNormalizer` emits a `DataPoint` with
-`device_id = "opcua:chan:0x<channel_id>"` and either `node:<service_id>` or
-`msg:<message_type>` as `point_id`, packing service/node ids into an `Int` when
-present, else the payload bytes, else the message size.
+- `device_id = "opcua:chan:0x<channel id>"`.
+- `point_id = "node:<service id>"` when the body carries an ExtensionObject TypeId, or
+  `"msg:<message type>"` otherwise.
+- `value = Bytes(<payload>)`.
 
 ## Usage
 
+A complete, runnable example parses a MSG chunk and normalizes it:
+
+```sh
+cargo run -p tpt-protocol-opcua --example parse_opcua
+```
+
 ```rust
-use tpt_protocol_core::{FrameParser, DataNormalizer};
-use tpt_protocol_opcua::{OpcuaParser, OpcuaNormalizer};
+use tpt_protocol_core::{DataNormalizer, FrameParser};
+use tpt_protocol_opcua::{OpcuaNormalizer, OpcuaParser};
 
-fn main() {
-    // Build a minimal MSG frame: "MSG" + chunk 'F' + size + channel/token/seq/req
-    // then service id = 1, node id = 2, 1 payload byte.
-    let mut raw: Vec<u8> = Vec::new();
-    raw.extend_from_slice(b"MSG");
-    raw.push(b'F');
-    raw.extend_from_slice(&[0; 4]); // size placeholder
-    raw.extend_from_slice(&0x1234u32.to_be_bytes()); // channel
-    raw.extend_from_slice(&0x5678u32.to_be_bytes()); // token
-    raw.extend_from_slice(&1u32.to_be_bytes());      // seq
-    raw.extend_from_slice(&2u32.to_be_bytes());      // req
-    raw.extend_from_slice(&1u32.to_be_bytes());      // service id
-    raw.extend_from_slice(&2u32.to_be_bytes());      // node id
-    raw.push(0xAA);                                  // payload
-    let size = raw.len() as u32;
-    raw[4..8].copy_from_slice(&size.to_be_bytes());
-
-    let parser = OpcuaParser::new();
-    let frame = parser.parse(&raw).unwrap();
-    assert_eq!(frame.message_type, tpt_protocol_opcua::OpcuaMessageType::Message);
-    assert_eq!(frame.service_id, Some(1));
-    assert_eq!(frame.node_id, Some(2));
-
-    let normalizer = OpcuaNormalizer::new();
-    let dp = normalizer.normalize(&frame).unwrap();
-    assert_eq!(dp.source_protocol, tpt_protocol_tup::SourceProtocol::Opcua);
-    assert_eq!(dp.point_id, "node:1");
-}
+let frame = OpcuaParser.parse(&wire)?;
+let point = OpcuaNormalizer.normalize(&frame)?;
+// point.point_id == "node:42" for a TypeId of 42
 ```
 
 ## `no_std`
 
-This crate is `#![no_std]` and uses `alloc` for `String`/`Vec` (payload,
-device-id formatting). It works on alloc-capable embedded targets.
+This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`, `String`,
+`format!`). It works in embedded environments that provide an allocator.
 
 ## Crate layout
 
-- `src/lib.rs` — `OpcuaMessageType`, `OpcuaFrame`, `OpcuaParser` (binary header
-  decoder), `OpcuaValidator` / `OpcuaState`, `OpcuaNormalizer`, unit/fuzz tests.
+- `src/lib.rs` — `OpcuaMessageType`, `OpcuaFrame`, `OpcuaParser` (`FrameParser`),
+  `OpcuaEncoder` (`FrameEncoder`), `OpcuaState` + `OpcuaValidator` (`StateValidator`),
+  `OpcuaNormalizer` (`DataNormalizer`), unit tests, and the `proptest` `mod fuzz`.
+- `examples/parse_opcua.rs` — runnable parse-and-normalize example.
 
 ## Status / Conformance
 
-- **Implemented:** decoding of the OPC UA binary message header, the six known
-  message types plus a catch-all, secure-channel header fields, MSG service/node
-  id extraction, connection/channel/token state validation, TUP normalisation,
-  and `proptest` fuzzing.
-- **Known gaps / TODOs:**
-  - This is a *structural* header parser, **not** a full OPC UA stack: it does
-    not implement the secure-channel handshake/crypto, full NodeId encoding
-    (namespace/identifier types), ExtensionObjects, or service request/response
-    schemas. Service and node ids are read as raw 4-byte big-endian integers.
-  - Normalised `timestamp` is `0`; callers must supply a real timestamp.
+- **Binary encoding only.** The XML and JSON encodings are not parsed.
+- **Services are not decoded.** The body is an ExtensionObject. Its TypeId is read, but the
+  service parameters inside it are carried as bytes. Only the TypeId is named.
+- **No secure channel.** Messages are parsed as they appear on the wire. Signing and
+  encryption (the security policies) are not applied, so encrypted bodies are carried
+  as bytes.
+- **Chunks are not reassembled.** A multi-chunk message is parsed chunk by chunk.
+- Normalised `timestamp` is `0`; callers must supply a real timestamp.
 
 ## Related crates
 
-- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `StateValidator` / `DataNormalizer` traits this crate implements.
+- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `FrameEncoder` /
+  `StateValidator` / `DataNormalizer` traits this crate implements.
 - [`tpt-protocol-tup`](../tpt-protocol-tup) — the normalized envelope this crate emits.
 
 ## License
 
-Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE) at your option.
+Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE)
+at your option.

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- User data is parsed in 16-byte blocks, each checked with its own CRC. Transport
+  header (`transport_first`, `transport_final`, `transport_seq`) and application
+  header (`application_control`) are parsed; the application header is present only in
+  the first fragment.
+- Function codes Confirm (0), Response (0x81) and UnsolicitedResponse (0x82).
+- `Dnp3Encoder` (`FrameEncoder`), with round-trip tests.
+- `try_parse` reports the exact consumed length, and `Ok(None)` for an incomplete frame.
+- Structured property tests that build frames with per-block CRCs, then mutate them.
+
+### Changed
+- The normalizer reports the data body as bytes. It used to report the frame length.
+- A frame with no body (a bare READ) returns a normalize error, because it carries no
+  measured value.
+
+### Fixed
+- The data-link header CRC covers all eight bytes before it, the start bytes included,
+  and is checked against the published CRC-16/DNP vector.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

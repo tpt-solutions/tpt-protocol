@@ -17,9 +17,10 @@ and the Linux-only `socketcan` dependency, which this implementation avoids).
 - 11-bit COB-ID decoding into function code (bits 10–7) and node ID (bits 6–0)
   (`CanOpenFunctionCode`, `CanOpenFrame`).
 - Payload bounds checking (max 8 bytes, the Classical CAN data-field limit).
-- Decoding of the standard CANopen function codes (`CanOpenFunctionCode`): NMT (0),
-  SYNC (1), Timestamp (2), PDO1-TX (3), PDO1-RX (4), PDO2-TX (5), PDO2-RX (6),
-  SDO-TX (0x0B), SDO-RX (0x0C), Heartbeat (0x0E), Emergency — plus `Unknown(u8)`.
+- Decoding of the CANopen function codes (`CanOpenFunctionCode`, per CiA 301): NMT (0),
+  SYNC (1, node 0 only), Emergency (1, any other node), Timestamp (2), PDO1–PDO4
+  TX/RX (3–10), SDO-TX (0x0B), SDO-RX (0x0C), Heartbeat (0x0E) — plus `Unknown(u8)`.
+- `CanOpenEncoder`: wire bytes from a frame, with round-trip tests against the parser.
 - Connection-health validation via `StateValidator` (`CanOpenValidator`) checking
   connection, a valid node ID (1–127), and a consecutive-error threshold.
 - TUP normalisation via `DataNormalizer` (`CanOpenNormalizer`) mapping each frame to
@@ -46,9 +47,9 @@ The decoded result is the `CanOpenFrame` struct (`cob_id`, `function_code`,
 disconnected, `node_id` is `0` or `> 127`, or more than 10 consecutive errors occur.
 
 `CanOpenNormalizer` produces a `DataPoint` keyed by `device_id = "canopen:{node_id}"`
-and `point_id = "fc:{function_code}"`; the value is the first 4 payload bytes as a
-big-endian `i64` when the payload is ≥ 4 bytes, otherwise the raw payload bytes or —
-with no payload — the integer COB-ID.
+and `point_id = "fc:{function_code}"`. When the payload is ≥ 4 bytes the value is the
+first 4 bytes as a little-endian integer (CANopen is little-endian on the wire);
+otherwise it is the raw payload bytes or, with no payload, the integer COB-ID.
 
 ## Usage
 
@@ -63,7 +64,7 @@ fn main() {
     raw.extend_from_slice(&cob_id.to_be_bytes());
     raw.extend_from_slice(&[0x00, 0x64, 0x00, 0x00]); // payload (0x6400)
 
-    let parser = CanOpenParser::new();
+    let parser = CanOpenParser;
     let frame = parser.parse(&raw).unwrap();
     assert_eq!(frame.function_code, CanOpenFunctionCode::Pdo1Tx);
     assert_eq!(frame.node_id, 0x01);
@@ -90,10 +91,8 @@ This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`,
 
 ## Status / Conformance
 
-- **Emergency function code not mapped.** `CanOpenFunctionCode::Emergency` exists as
-  a variant but has no numeric mapping in `from_u8`; an Emergency COB-ID decodes to
-  `Unknown(u8)` rather than `Emergency`. (Bits 10–7 == `0x0D`/13 is the EMCY
-  function code and is currently unhandled.)
+- **SYNC and Emergency share function code 1.** The node ID decides: node 0 is SYNC,
+  any other node is Emergency (COB-ID `0x081`–`0x0FF`).
 - **PDO/SDO contents not decoded.** Process data (PDO) and service data (SDO)
   payloads are carried as raw bytes; object dictionary indices/subindices and SDO
   expedited/segmented transfers are not interpreted.

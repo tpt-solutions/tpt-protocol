@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `OpcuaEncoder` (`FrameEncoder`), with round-trip tests against the parser.
+- A MSG body is decoded as an `ExtensionObject`: its TypeId (two-byte, four-byte and
+  numeric NodeId forms), encoding byte and length-prefixed body.
+- `try_parse` for streams: `Ok(None)` for an incomplete message, otherwise the consumed
+  length.
+- Structured property tests (valid messages, then mutation), and a runnable `parse_opcua`
+  example.
+
+### Changed
+- OPC UA Binary is little-endian throughout. The parser read big-endian.
+- `message_size` must equal the frame length, so bytes after a message are never read as
+  its payload.
+- Chunk type (`F`, `C`, `A`) and message type are validated.
+- `OpcuaFrame::node_id` is replaced by `type_namespace`. The service and node fields were
+  read from fixed offsets.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

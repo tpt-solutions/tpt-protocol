@@ -1,180 +1,101 @@
 # tpt-protocol-uds
 
-**ISO 14229 (UDS) automotive diagnostic-services parser for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.**
+UDS (ISO 14229, Unified Diagnostic Services) request, response and negative-response
+parser, validator, and TUP normalizer for the
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
-UDS (Unified Diagnostic Services) is the ISO 14229 application-layer protocol
-used to diagnose and configure ECUs over CAN, DoIP, or K-Line. This crate is a
-from-scratch, memory-safe parser/normalizer — there is no maintained Rust crate
-for this protocol — implementing the TPT `FrameParser` / `StateValidator` /
-`DataNormalizer` traits so UDS traffic normalizes into TUP `DataPoint`s like
-every other protocol in the suite.
+## Overview
+
+UDS is the diagnostic protocol that automotive ECUs use for session control, ECU reset,
+reading data and fault codes, routines, and software download. A tester sends a request
+with a service identifier (SID); the ECU answers with a positive response (the SID plus
+0x40) or a negative response (0x7F, the SID, and a negative response code). TPT implements
+the request and response forms of these services in a `#![no_std]` + `alloc` crate, so
+captured diagnostic traffic can be decoded and normalized.
 
 ## Features
 
-- `#![no_std]` by default — only needs `alloc`.
-- Implements the three core traits from
-  [`tpt-protocol-core`](../tpt-protocol-core).
-- Recognises the commonly used UDS service identifiers and their sub-functions,
-  distinguishes request vs. response frames, and normalizes each frame to a TUP
-  `DataPoint`.
-- A `proptest` fuzz test asserting `UdsParser::parse` never panics on arbitrary
-  input.
+- Requests and positive responses for the common services, with their sub-functions
+  where the service has them.
+- Negative responses (`0x7F`): the requested SID and the negative response code. They
+  normalize to a `Bad`-quality point.
+- Suppress-positive-response: bit 7 of a request's sub-function. Responses echo the
+  sub-function unchanged.
+- Services with their request and response forms, including ReadDTCInformation,
+  RoutineControl, ControlDTCSetting, RequestDownload, RequestUpload, TransferData and
+  RequestTransferExit. Unknown SIDs are kept as `Unknown`.
+- `UdsEncoder`: wire bytes from a frame, with round-trip tests against the parser.
+- Connection-state validation via `StateValidator` (`UdsValidator`).
+- TUP normalisation via `DataNormalizer` (`UdsNormalizer`).
+- `#![no_std]` + `alloc` (heap collections only; no `std`).
+- `proptest` fuzz tests asserting `UdsParser::parse` never panics on arbitrary input.
+  Structured generators build valid requests and responses, then mutate them.
 
 ## Architecture
 
-```
-UDS bytes on the wire
-        │  UdsParser::parse        (FrameParser)
-        ▼
-UdsFrame { sid, sub_function, data, is_request }
-        │  UdsValidator::validate  (StateValidator, over UdsState)
-        │  UdsNormalizer::normalize(DataNormalizer)
-        ▼
-DataPoint (SourceProtocol::Uds)
-```
+`UdsParser` reads the SID from the first byte and decides whether the frame is a request
+or a response from it. A response carries the SID plus 0x40, and a negative response is
+0x7F. For services with sub-functions, the next byte is the sub-function, and its bit 7
+is the suppress-positive-response flag.
 
-Three public pieces:
+The decoded result is the `UdsFrame` struct (`sid`, `sub_function`, `data`, `is_request`,
+`suppress_positive_response`).
 
-- **`UdsParser`** (`FrameParser<Frame = UdsFrame>`) — validates non-empty input
-  and decodes the SID, optional sub-function, and payload.
-- **`UdsValidator`** (`StateValidator<State = UdsState>`) — checks connection
-  health and session validity.
-- **`UdsNormalizer`** (`DataNormalizer<Frame = UdsFrame>`) — maps an
-  `UdsFrame` to a TUP `DataPoint` with a SID-based `point_id`.
-
-### Service IDs (`UdsSid`)
-
-| SID (hex) | Variant | Name |
-| --------- | ------- | ---- |
-| `0x10` | request | `DiagnosticSessionControl` |
-| `0x11` | request | `EcuReset` |
-| `0x14` | request | `ClearDiagnosticInformation` |
-| `0x22` | request | `ReadDataByIdentifier` |
-| `0x23` | request | `ReadMemoryByAddress` |
-| `0x27` | request | `SecurityAccess` |
-| `0x28` | request | `CommunicationControl` |
-| `0x2E` | request | `WriteDataByIdentifier` |
-| `0x3E` | request | `TestPresenter` (TesterPresent) |
-| `0x40 | sid` | `Response(u8)` | positive response to SID `sid` (e.g. `0x51` → `Response(0x11)`) |
-| — | `Unknown(u8)` | any unrecognised SID byte |
-
-Response frames are detected by the high bit: bytes in `0x40..=0x7E` decode to
-`UdsSid::Response(sid & 0x3F)`. `UdsSid` exposes `raw_value()` (the on-wire
-byte) and `is_response()`, and implements `Display`.
-
-### Sub-functions (`SubFunction`)
-
-Sub-functions are parsed for the SIDs that carry one: `0x10`, `0x11`, `0x14`,
-`0x27`, `0x28`, `0x3E` and their responses (`0x50`, `0x51`, `0x54`, `0x67`,
-`0x68`, `0x7E`). The sub-function is the second byte; its high bit (`0x80`)
-marks a response sub-function, and the low 7 bits are the parameter:
-
-- `SubFunction::None` — no sub-function (e.g. `ReadDataByIdentifier`)
-- `SubFunction::Request(u8)` — `param & 0x7F`
-- `SubFunction::Response(u8)` — `(param & 0x7F)` on a response frame
-
-### Addressing / frame shape
-
-UDS is a single-CAN-frame (or single-DoIP-DO) payload with no addressing
-information of its own; this crate models the *service layer only*. A frame is
-simply `sid (1 byte) [sub_function (1 byte)] [data …]`. The parser:
-
-- rejects empty input (`Error::Parse`),
-- treats any single byte as a valid `sid` (unknown SIDs become `Unknown(..)`),
-- copies the remaining bytes (after the optional sub-function) verbatim into
-  `data`.
-
-### Validator (`UdsState`)
-
-`UdsState` tracks `connected`, `session_type`, `security_level`,
-`last_ok_timestamp`, and `error_count`. `UdsValidator::validate` rejects when:
-
-- `!connected` → `"UDS device not connected"`, or
-- `session_type > 3` → `"UDS invalid session type"`, or
-- `error_count > 10` → `"UDS device has N consecutive errors"`.
-
-This is the same `connected`/`error_count > 10` threshold contract that
-[`tpt-protocol-telos`](../tpt-protocol-telos) proves for the Modbus validator.
-
-### Normalizer
-
-`UdsNormalizer::normalize` produces a `DataPoint` with `device_id = "uds:ecu"`,
-`point_id = format!("sid:{}", frame.sid)`, `timestamp = 0`, `quality = Good`,
-and a `value` chosen by data length:
-
-- empty → `TupValue::Int(sid.raw_value() as i64)`
-- `1..=4` bytes → big-endian `u32` as `TupValue::Int`
-- `> 4` bytes → `TupValue::Bytes(data.clone())`
+`UdsNormalizer` produces `device_id = "uds:ecu"` and `point_id = "sid:<sid>"` for a
+request or positive response. A negative response gives `point_id = "negative:0x<sid>"`
+for the rejected service, with `Quality::Bad`. Its value is the negative response code.
 
 ## Usage
 
-```rust
-use tpt_protocol_core::{FrameParser, DataNormalizer};
-use tpt_protocol_tup::{DataPoint, SourceProtocol, TupValue};
-use tpt_protocol_uds::{UdsParser, UdsNormalizer, UdsSid, SubFunction};
+A complete, runnable example parses a negative response and normalizes it:
 
-fn main() {
-    // ReadDataByIdentifier (0x22) for DID 0xF190, no sub-function.
-    let raw: [u8; 3] = [0x22, 0xF1, 0x90];
-
-    let parser = UdsParser::new();
-    let frame = parser.parse(&raw).unwrap();
-    assert_eq!(frame.sid, UdsSid::ReadDataByIdentifier);
-    assert_eq!(frame.sub_function, SubFunction::None);
-    assert!(frame.is_request);
-
-    let normalizer = UdsNormalizer::new();
-    let dp: DataPoint = normalizer.normalize(&frame).unwrap();
-    assert_eq!(dp.source_protocol, SourceProtocol::Uds);
-    assert_eq!(dp.point_id, "sid:ReadDataByIdentifier");
-    assert_eq!(dp.value, TupValue::Int(0xF190));
-}
+```sh
+cargo run -p tpt-protocol-uds --example parse_uds
 ```
 
-A response frame (`0x51` = `0x11 | 0x40`) decodes to `UdsSid::Response(0x11)`
-with `is_request == false`; a sub-function response (`0x51 0x01`) yields
-`SubFunction::Response(1)`.
+```rust
+use tpt_protocol_core::{DataNormalizer, FrameParser};
+use tpt_protocol_uds::{UdsNormalizer, UdsParser};
+
+let frame = UdsParser.parse(&wire)?;
+let point = UdsNormalizer.normalize(&frame)?;
+// a negative response to ReadDataByIdentifier (0x22) has quality Bad
+```
 
 ## `no_std`
 
-This crate is `#![no_std]` and uses `alloc` for the `data` payload
-(`Vec<u8>`) and the `format!`-built `point_id`. It compiles for bare-metal
-targets that provide an allocator.
+This crate is `#![no_std]` and uses `alloc` for heap-allocated data (`Vec`, `String`,
+`format!`). It works in embedded environments that provide an allocator.
 
 ## Crate layout
 
-```
-tpt-protocol-uds/
-├── Cargo.toml
-├── README.md
-└── src/
-    └── lib.rs   # UdsSid, SubFunction, UdsFrame, UdsParser, UdsState,
-                 # UdsValidator, UdsNormalizer + unit & proptest fuzz tests
-```
+- `src/lib.rs` — `UdsSid`, `SubFunction`, `UdsFrame`, `UdsParser` (`FrameParser`),
+  `UdsEncoder` (`FrameEncoder`), `UdsState` + `UdsValidator` (`StateValidator`),
+  `UdsNormalizer` (`DataNormalizer`), unit tests, and the `proptest` `mod fuzz`.
+- `examples/parse_uds.rs` — runnable parse-and-normalize example.
+- `examples/diff_decode.rs` — used by the differential test against udsoncan in CI.
 
 ## Status / Conformance
 
-- Implements `FrameParser`, `StateValidator`, `DataNormalizer` from
-  `tpt-protocol-core`.
-- Covers the 8 request SIDs above plus the `Response`/`Unknown` envelopes and
-  sub-function parsing for the 6 sub-function-bearing SIDs. Other SIDs (e.g.
-  `RoutineControl`, `IOControlByIdentifier`) arrive as `UdsSid::Unknown` and are
-  still parseable/normalizable.
-- Unit tests cover session-control, response, `ReadDataByIdentifier`, empty and
-  garbage input, normalizer round-trip, and validator states.
-- `proptest` fuzz test `parse_never_panics` confirms `UdsParser::parse` never
-  panics on arbitrary `0..=1024` byte inputs.
+- **Differential test.** `scripts/differential/uds_udsoncan.py` checks the decoding against
+  udsoncan in CI.
+- **Payloads are not decoded.** A ReadDataByIdentifier response's data identifier and
+  value, and the body of a TransferData block, are carried as bytes.
+- **No transport.** ISO-TP (ISO 15765-2) segmentation and reassembly are not implemented,
+  so a multi-frame message must be reassembled by the caller.
+- **No security access.** The seed and key exchange is parsed as a request and response.
+  The key derivation is not performed.
+- Normalised `timestamp` is `0`; callers must supply a real timestamp.
 
 ## Related crates
 
-- [`tpt-protocol-core`](../tpt-protocol-core) — the trait definitions.
-- [`tpt-protocol-tup`](../tpt-protocol-tup) — the `DataPoint` envelope produced.
-- [`tpt-protocol-doip-someip`](../tpt-protocol-doip-someip) — the transport UDS
-  commonly rides over (DoIP/SOME-IP) at the layers below this service parser.
-- [`tpt-protocol-telos`](../tpt-protocol-telos) — formal verification of the
-  `connected` / `error_count > 10` validator threshold.
+- [`tpt-protocol-doip-someip`](../tpt-protocol-doip-someip) — DoIP carries UDS
+  diagnostic messages over Ethernet.
+- [`tpt-protocol-core`](../tpt-protocol-core) — the `FrameParser` / `FrameEncoder` /
+  `StateValidator` / `DataNormalizer` traits this crate implements.
+- [`tpt-protocol-tup`](../tpt-protocol-tup) — the normalized envelope this crate emits.
 
 ## License
 
-Licensed under either of [MIT](../../LICENSE-MIT) or
-[Apache-2.0](../../LICENSE-APACHE) at your option.
+Licensed under either of [MIT](../../LICENSE-MIT) or [Apache-2.0](../../LICENSE-APACHE)
+at your option.

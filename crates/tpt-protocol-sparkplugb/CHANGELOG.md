@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Protobuf payloads. A bounds-checked reader handles varints, fixed32 and fixed64 fields,
+  and length-delimited fields. Unknown fields are skipped, and groups are rejected.
+- `Payload` and `Metric` decoding. Datatypes map to TUP values. Null metrics and
+  structured types (DataSet, Template) carry no value.
+- spBv1.0 topics: `spBv1.0/<group>/<type>/<edge node>[/<device>]`, with the segment rules
+  for each message type. Wildcards are rejected.
+- `SparkplugNormalizer::normalize_all` gives one data point per metric. `SparkplugEncoder`
+  and structured property tests. A runnable `parse_sparkplugb` example.
+
+### Changed
+- Rewritten. The previous parser used an invented binary framing, not Sparkplug B.
+
+### Fixed
+- Int64 and UInt64 values above `i64::MAX` are errors. They were truncated.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

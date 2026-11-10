@@ -123,6 +123,9 @@ tpt-protocol-telos/
   checked by `cargo test --features verify` and must pass in CI.
 - `TelosError::CheckFailed` carries the failing check descriptions so a
   regression names its own counter-example.
+- Conformance tests (`dev-dependency` on `tpt-protocol-modbus`, so no cycle) check the
+  CRC window, the WriteMultipleRegisters quantity bound and the validator threshold against
+  the real Modbus code, by sampling. They are tests, not proofs.
 
 ## Related crates
 

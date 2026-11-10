@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `DoipSomeipEncoder` (`FrameEncoder`), with round-trip tests for both frame kinds.
+- Structured property tests: valid DoIP and SOME/IP frames, then mutation.
+
+### Changed
+- The DoIP payload-type table follows ISO 13400-2.
+- A DoIP frame is recognised by a version byte (`0x01`, `0x02`, `0x03` or `0xFF`)
+  followed by its bitwise inverse. Anything else falls through to SOME/IP.
+- Truncated and trailing DoIP payloads are errors, not empty payloads. The SOME/IP
+  length must equal the frame length.
+- The normalizer reports a DoIP payload as bytes. It used to report the payload length.
+- A header-only message (for example a vehicle-identification request) returns a
+  normalize error, because it carries no measured value.
+
+### Fixed
+- Payload types `0x0004`–`0x0008` and `0x8001`–`0x8003` had the wrong names.
+- The payload-length overflow guard is checked, so a `u32::MAX` length cannot overflow
+  the slice range.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

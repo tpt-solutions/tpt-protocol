@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- cEMI `L_Data` parsing: message code, control fields (priority and hop count), source
+  individual address, group or individual destination, NPDU length and the APCI service.
+- Explicit datapoint decoders: `decode_dpt1`, `decode_dpt5_percent` and `decode_dpt9`
+  (with the `0x7FFF` invalid marker). Tests use known DPT 9.001 values.
+- `KnxEncoder` (`FrameEncoder`), with round-trip tests against the parser.
+- Structured property tests, and a runnable `parse_knx` example.
+
+### Changed
+- The previous parser read an invented layout that is not KNX. It is replaced.
+- The normalizer uses the source individual address as the device and the destination
+  group address as the point.
+- `DptValue` is now `Short(u8)` (a six-bit value in a one-octet telegram) or `Data(Vec<u8>)`.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

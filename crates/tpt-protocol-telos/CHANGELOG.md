@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Conformance tests that run against the real Modbus code (a dev-dependency on
+  `tpt-protocol-modbus`, so there is no cycle). They check the CRC window, the
+  WriteMultipleRegisters quantity bound and the validator threshold, by sampling. They are
+  not proofs.
+
+### Changed
+- `tpt-telos-parser` and `tpt-telos-verifier` are 0.2.0.
+- `verify_bundled` finds the bundled specifications from `CARGO_MANIFEST_DIR`, so it works
+  from any directory.
+- The crate doc says the validator rejects a device that is not connected, or whose error
+  count is above 10. It used to say the validator never rejects a connected device.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

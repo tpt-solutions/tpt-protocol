@@ -50,8 +50,12 @@ The crate is built around text parsing over a single combined frame type:
 - `Hl7Validator` validates `Hl7ConnectionState` (`connected`, `messages_processed`,
   `last_ack_received`): it errors if not connected, and flags an awaiting-ACK
   condition when messages have been processed but no ACK has been received.
-- `Hl7Normalizer` maps a frame to `device_id = "hl7/<trigger_event>"`,
-  `point_id = <message_control_id>`, and `value = Text(<message_type>)`.
+- `Hl7Normalizer` maps a frame to one data point per OBX observation:
+  `device_id = "hl7/<trigger_event>"`, `point_id` = the observation code (for example
+  `CHOL`, or `obs-<n>` when the code is empty). A numeric result is a `Float`, and the
+  unit and quality come from the result fields and status. A frame with no OBX segment
+  normalizes to its message-control point, with `Text(<message_type>)`.
+- `Hl7Encoder`: wire bytes from a frame, with round-trip tests against the parser.
 
 ## Usage
 
@@ -93,7 +97,7 @@ This crate is `#![no_std]` and uses `alloc` for heap-allocated strings and vecto
 - Implemented: segment/field/component decoding, `MSH` header parsing, message-type
   classification for the common ADT/ORM/ORU/MDM families, state validation, and TUP
   normalisation.
-- Known gaps / TODOs (see workspace `TODO.md` and the Phase 9.2 HL7 UTF-8 fix):
+- Known gaps / TODOs:
   - No schema/version-specific field decoding per HL7 v2.x data type tables (e.g.
     `XPN`, `CX`, `TS`); all components are kept as raw `String`s.
   - No escaping/encoding-character handling beyond the standard `^`/`|` separators;

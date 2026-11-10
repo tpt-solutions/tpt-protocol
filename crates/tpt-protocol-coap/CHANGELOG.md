@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `CoapEncoder` (`FrameEncoder`), with round-trip tests against the parser.
+- Structured property tests (valid frames, then mutation).
+
+### Changed
+- Uri-Path is one UTF-8 segment per option. Invalid UTF-8 is a parse error. It used to
+  be stored as an empty string.
+- Max-Age (4 bytes), Observe (3) and Content-Format (2) reject longer values instead
+  of truncating them.
+
+### Fixed
+- Option-number arithmetic is checked, so an overflow is a parse error. A debug-mode
+  `u16` overflow in extended-length parsing (`+ 269` on a 2-byte extension) is fixed.
+- The `0xFF` payload marker must be followed by at least one byte (RFC 7252 §3).
+- Bracketed indices in doc comments (`[0]`, `[1]`) are escaped, so `cargo doc` passes
+  with `-D warnings`.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added
