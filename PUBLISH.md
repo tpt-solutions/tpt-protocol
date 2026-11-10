@@ -85,12 +85,12 @@ cargo publish -p <crate>
 
 ## Post-publish
 
-- [ ] Verify docs.rs built each crate (https://docs.rs/<crate>). Any failure is usually a `cfg`/feature docs issue. Fix it in a patch release.
-- [ ] Add crates.io and docs.rs badges to the root README (TODO.md Phase 13 is waiting on this)
-- [ ] Set the cargo-semver-checks baseline to the published 0.1.0 (TODO.md Phase 13 is waiting on this)
-- [ ] Add a `cargo publish --dry-run` CI job now that the registry is live (TODO.md Phase 13)
-- [ ] Tag the release `v0.1.0`. This triggers `release.yml`, which builds the daemon and CLI binaries. Decide whether to tag before or after the crates are published.
-- [ ] Update TODO.md Phase 4 checkboxes and the README "published crates" count if it changed
+- [x] Verify docs.rs built each crate (https://docs.rs/<crate>). Done 2026-11-11: all 21 report `doc_status: true`.
+- [x] Add crates.io and docs.rs badges to the root README. Done 2026-11-11 (for `tpt-protocol-tup`).
+- [x] Set the cargo-semver-checks baseline to the published 0.1.0. Done 2026-11-11: `semver-checks` CI job.
+- [x] Add a `cargo publish --dry-run` CI job now that the registry is live. Done 2026-11-11: `publish-dry-run` CI job.
+- [ ] Tag the release `v0.1.0`: annotated tag created locally on `6dfb688`, **not pushed**. Pushing triggers `release.yml`, which builds the daemon and CLI binaries and creates a public GitHub release. Awaiting go-ahead.
+- [x] Update TODO.md Phase 4 checkboxes and the README "published crates" count if it changed (count unchanged: 19 protocol crates + tup + core).
 - [ ] Record the publish date here: 2026-11-11
 
 ---
