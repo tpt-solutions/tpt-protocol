@@ -5,7 +5,7 @@
 //! (bits 0-7). PDU format below 240 is PDU1, where the PDU specific byte is the
 //! destination address; 240 and up is PDU2, where it is part of the PGN.
 //!
-//! Supported: the single-frame PGNs listed in [`decode_pgn`]. Fast-packet PGNs
+//! Supported: the single-frame PGNs listed in the private `decode_pgn` table. Fast-packet PGNs
 //! (more than eight bytes, for example GNSS position 129029) are parsed as
 //! frames but not reassembled, so the normalizer refuses them with an error
 //! rather than producing a partial value.

@@ -17,7 +17,7 @@
 //! | `bytes_value` | binary, nullable| set for raw bytes                      |
 //!
 //! Each point sets exactly one of the four value columns. Rows are written in row
-//! groups of [`ROW_GROUP_ROWS`]. Parquet keeps its table of contents (the footer)
+//! groups of `ROW_GROUP_ROWS`. Parquet keeps its table of contents (the footer)
 //! at the end of the file, so the file can be read only after the source closes.
 //! A daemon stopped with Ctrl-C leaves a file with no footer, which readers reject.
 //! The MCAP recorder does not have this problem; use it for long captures.

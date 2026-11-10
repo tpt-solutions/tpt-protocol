@@ -33,6 +33,10 @@ allow = [
     "Unicode-3.0",
     "Zlib",
     "MPL-2.0",
+    # Public-domain dedication. Reached only via tiny-keccak 2.0.2 in the
+    # dev-dependency tree (tpt-protocol-tup -> jsonschema -> ahash ->
+    # const-random -> const-random-macro -> tiny-keccak).
+    "CC0-1.0",
 ]
 
 [bans]
