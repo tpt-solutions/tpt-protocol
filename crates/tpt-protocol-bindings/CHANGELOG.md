@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - C ABI: `tpt_decode_json` and `tpt_free_string`, declared in `include/tpt_protocol.h`. The
   header is hand-written, and a unit test checks that it matches the exports.
 - WebAssembly build (`--features wasm`), with `decode_hex` and `protocols`, pinned to

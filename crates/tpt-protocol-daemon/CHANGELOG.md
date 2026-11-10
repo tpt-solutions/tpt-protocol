@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - Transports behind one streaming framer, which uses each protocol's `try_parse`:
   - `--tcp-connect HOST:PORT` (reconnects), `--tcp-listen ADDR:PORT` (one task per
     connection), `--udp-bind ADDR:PORT` (one datagram is one message).
@@ -41,21 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `daemon.example.toml`, and a config file that rejects unknown keys. CLI flags override
   the file.
 - Replayed points are stamped at ingest when their source has no time.
-
-### Changed
-- `--replay-format` accepts `hex` (default), `raw`, `candump` and `pcap`. `--replay`
-  requires `--simulate`.
-- Plain-HTTP output (InfluxDB, OpenTelemetry) has no TLS. An `https://` URL is refused.
-- The MQTT client is built without its default TLS stack. The sink uses plain TCP only.
-
-### Fixed
-- Rustdoc intra-doc links to private items, which failed `cargo doc -D warnings`.
-- A lockfile dependency with four RUSTSEC advisories came in through the MQTT client's TLS
-  stack. Removing it makes `cargo audit` and `cargo deny` pass.
-
-## [0.1.0] - 2026-07-30
-
-### Added
 - Initial release: background service for the TPT Protocol suite — simulated protocol plugins plus a local WebSocket API.
 - `std` binary crate (`tpt-protocol-daemon`) driving every protocol crate via the `tpt_protocol_core::ProtocolPlugin` trait.
 - Plugin architecture in `src/plugins/mod.rs`: a `def_protocol!` macro generating one simulated `ProtocolPlugin` per protocol crate (19 total), with `build_plugin(name)`, `list_protocols()`, and `replay_one(name, bytes)`.
@@ -65,3 +53,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Simulated data points that rotate through `Good` / `Uncertain` / `Bad` / `Stale` quality so CLI/TUI color coding is demoable out of the box.
 - Non-loopback `--bind` warning (the API has no authentication); `overflow-checks = true` in the release profile is set at the workspace root.
 - Runnable WebSocket consumer snippets: `examples/client.py` (Python) and `examples/client.js` (Node).
+
+### Changed
+
+- `--replay-format` accepts `hex` (default), `raw`, `candump` and `pcap`. `--replay`
+  requires `--simulate`.
+- Plain-HTTP output (InfluxDB, OpenTelemetry) has no TLS. An `https://` URL is refused.
+- The MQTT client is built without its default TLS stack. The sink uses plain TCP only.
+
+### Fixed
+
+- Rustdoc intra-doc links to private items, which failed `cargo doc -D warnings`.
+- A lockfile dependency with four RUSTSEC advisories came in through the MQTT client's TLS
+  stack. Removing it makes `cargo audit` and `cargo deny` pass.

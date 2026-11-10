@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - A bounded XML parser for the subset SDC needs: elements, attributes, namespace scope,
   character data, comments, CDATA and processing instructions. Entity and numeric
   character references are decoded. DOCTYPE is rejected, which blocks entity expansion,
@@ -18,19 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SdcEncoder` (`FrameEncoder`), with round-trip tests against the parser.
 - `normalize_all` gives one point per numeric observation.
 - Structured property tests (valid messages, then mutation).
-
-### Changed
-- Rewritten. SDC messages are SOAP 1.2 envelopes with BICEPS XML bodies. The previous
-  binary layout was invented, so it is gone (including its MDIB, waveform, alert and
-  context decoders).
-
-### Notes
-- The BICEPS element names and namespace version are not yet checked against a real
-  device. Waveforms, alerts and context states are not decoded yet.
-
-## [0.1.0] - 2026-07-30
-
-### Added
 - Initial release: IEEE 11073 SDC bedside medical-device protocol support in the TPT Protocol suite.
 - Binary frame parsing: message type (1 byte) + timestamp (8 bytes) + body.
 - Message-type decoding for `Mdib` (0), `Waveform` (1), `Alert` (2), and `Context` (3).
@@ -43,3 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUP normalisation via the `DataNormalizer` trait (`SdcNormalizer`), mapping numeric metrics to `Float` + unit, waveform averages to `Float` (`mV`), alerts to `Bool`, and context to `Text`.
 - `#![no_std]` + `alloc` support.
 - `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
+
+### Changed
+
+- Rewritten. SDC messages are SOAP 1.2 envelopes with BICEPS XML bodies. The previous
+  binary layout was invented, so it is gone (including its MDIB, waveform, alert and
+  context decoders).
+
+### Notes
+
+- The BICEPS element names and namespace version are not yet checked against a real
+  device. Waveforms, alerts and context states are not decoded yet.

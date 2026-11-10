@@ -7,23 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - `CanOpenEncoder` (`FrameEncoder`), with round-trip tests against the parser.
 - PDO3 and PDO4 function codes (TX and RX), and the function-code table follows CiA 301.
 - Structured property tests that generate COB-IDs over the real function-code bases.
-
-### Changed
-- The normalizer reads the first 4 payload bytes as little-endian. CANopen is
-  little-endian on the wire. The round-trip test used a circular big-endian vector
-  and now uses a little-endian one.
-
-### Fixed
-- Function code 1 is SYNC only for node 0. For any other node it is Emergency
-  (COB-ID `0x081`–`0x0FF`). Emergency was not mapped before.
-
-## [0.1.0] - 2026-07-30
-
-### Added
 - Initial release: CANopen (embedded motion control over Classical CAN) support in
   the TPT Protocol suite.
 - COB-ID frame parsing in `CanOpenParser`, splitting the 11-bit COB-ID into function
@@ -40,3 +30,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `#![no_std]` + `alloc` support (the popular `canopen` crate requires `std` +
   Linux-only `socketcan`; this implementation is dependency-free and `no_std`).
 - `proptest` fuzz tests asserting `FrameParser::parse` never panics on arbitrary input.
+
+### Changed
+
+- The normalizer reads the first 4 payload bytes as little-endian. CANopen is
+  little-endian on the wire. The round-trip test used a circular big-endian vector
+  and now uses a little-endian one.
+
+### Fixed
+
+- Function code 1 is SYNC only for node 0. For any other node it is Emergency
+  (COB-ID `0x081`–`0x0FF`). Emergency was not mapped before.

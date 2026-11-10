@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - `cargo xtask new-protocol <name>`: scaffolds `crates/tpt-protocol-<name>` (manifest,
   source with a parser, validator and normalizer, tests, README, example), a fuzz target,
   and the wiring into the workspace, the `SourceProtocol` enum, the conformance list, the

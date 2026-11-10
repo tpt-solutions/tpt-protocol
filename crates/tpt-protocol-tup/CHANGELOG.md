@@ -7,30 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - `cddl_conformance` tests, which check encoder output against the CDDL rules and check
   that the protocol and quality lists match the Rust enums. The checker is hand-written,
   not a general CDDL validator.
 - The JSON mirror tags bytes and non-finite floats as objects, so they round-trip.
-
-### Changed
-- CBOR matches `schema/tup-v1.cddl`: integer keys and `[tag, value]` values.
-- Non-canonical CBOR is rejected: indefinite-length maps and arrays, extra array elements,
-  duplicate keys, and `schema_version` 0.
-- The JSON mirror rejects invalid hex, unsupported `schema_version` values and integers
-  above `u64`.
-- `Quality` and `SourceProtocol` are `#[non_exhaustive]`.
-- `serde` is optional and enabled by `std`. CBOR is gated behind `alloc`, since it encodes
-  into a `Vec`. Default features are empty.
-- `hex` is optional, behind `std`.
-
-### Fixed
-- Schema tests run on `jsonschema` 0.61 without its `http` feature, which pulled in
-  `reqwest` and `h2` (RUSTSEC-2026-0258). The schema is self-contained.
-
-## [0.1.0] - 2026-07-30
-
-### Added
 - Initial release: the TPT Unified Protocol (TUP) canonical normalized schema in the TPT Protocol suite.
 - `DataPoint` model with `source_protocol`, `device_id`, `point_id`, `timestamp`, `value`, `unit`, `quality`, and `raw` fields, plus builder helpers `with_unit` / `with_raw` / `with_timestamp` / `with_quality`.
 - `TupValue` enum (`Int`, `Float`, `Bool`, `Text`, `Bytes`) with `From` conversions and `Display`.
@@ -42,3 +26,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Const `schema_version()` (`1`) on every `DataPoint`; decoder rejects frames with an unsupported schema version.
 - `examples/roundtrip.rs` demonstrating isomorphic CBOR + JSON round-trips.
 - Tests validating the `SPEC-TUP.md` §4 worked example against `schema/tup-v1.schema.json`, CBOR/JSON round-trips for every value type and quality, and rejection of truncated/garbage/oversized inputs.
+
+### Changed
+
+- CBOR matches `schema/tup-v1.cddl`: integer keys and `[tag, value]` values.
+- Non-canonical CBOR is rejected: indefinite-length maps and arrays, extra array elements,
+  duplicate keys, and `schema_version` 0.
+- The JSON mirror rejects invalid hex, unsupported `schema_version` values and integers
+  above `u64`.
+- `Quality` and `SourceProtocol` are `#[non_exhaustive]`.
+- `serde` is optional and enabled by `std`. CBOR is gated behind `alloc`, since it encodes
+  into a `Vec`. Default features are empty.
+- `hex` is optional, behind `std`.
+
+### Fixed
+
+- Schema tests run on `jsonschema` 0.61 without its `http` feature, which pulled in
+  `reqwest` and `h2` (RUSTSEC-2026-0258). The schema is self-contained.

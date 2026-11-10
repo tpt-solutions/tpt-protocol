@@ -9,7 +9,10 @@ Per-crate changes are in each crate's `CHANGELOG.md`.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - **Daemon transports** behind one streaming framer that uses each protocol's `try_parse`:
   TCP connect (reconnects) and listen, UDP (one datagram is one message), serial
   (`--serial`, feature `serial`), SocketCAN (`--can`, feature `socketcan`, Linux), and
@@ -88,6 +91,7 @@ Per-crate changes are in each crate's `CHANGELOG.md`.
 - `CONTRIBUTING.md` accepts contributions as issues only. Pull requests are not accepted.
 
 ### Changed
+
 - **Core:** `Error::Checksum` carries `u32` values. It was `u8`, which cannot hold a 16-bit CRC.
   Modbus RTU, DNP3 and NMEA use it for checksum mismatches, so callers can match the variant.
   `default-features = []`, so the crate builds `#![no_std]` by default.
@@ -192,7 +196,15 @@ Per-crate changes are in each crate's `CHANGELOG.md`.
 - Phase 5 "Real transport clients" is partly done. The daemon has real TCP, UDP, serial, SocketCAN and
   stdin transports and a Modbus TCP poller. The `ProtocolPlugin` trait still exposes only `simulate()`.
 
+### Removed
+
+- `CODE_OF_CONDUCT.md`, `SECURITY.md` and the pull request template, by maintainer decision.
+- `scripts/new-protocol-crate.sh`, replaced by `cargo xtask new-protocol`.
+- The single-file `transport.rs` module, replaced by the `transport/` module.
+- The `msrv` CI job pinned Rust 1.81. It now pins 1.85.
+
 ### Fixed
+
 - The TUI answered no pings, because its read loop dropped the write half.
 - The web UI's Vite config imported from the wrong package and was missing `src/app.html`, so it never
   built.
@@ -209,6 +221,7 @@ Per-crate changes are in each crate's `CHANGELOG.md`.
   unused TLS dependency had four RUSTSEC advisories.
 
 ### Security
+
 - Daemon WebSocket API: handshakes are checked for a loopback `Host` header (DNS-rebinding defence)
   and an allowed browser `Origin`. The `--token` comparison is constant time.
 - Daemon: the daemon warns (instead of silently allowing) when `--bind` is not loopback.
@@ -225,13 +238,8 @@ Per-crate changes are in each crate's `CHANGELOG.md`.
 - Dropped the unused `native-tls` feature from `tokio-tungstenite` (no TLS acceptor existed).
 - Root workspace sets `overflow-checks = true` in `[profile.release]`.
 
-### Removed
-- `CODE_OF_CONDUCT.md`, `SECURITY.md` and the pull request template, by maintainer decision.
-- `scripts/new-protocol-crate.sh`, replaced by `cargo xtask new-protocol`.
-- The single-file `transport.rs` module, replaced by the `transport/` module.
-- The `msrv` CI job pinned Rust 1.81. It now pins 1.85.
-
 ### Known gaps (documented, not fixed)
+
 - **Plugins simulate.** Each `ProtocolPlugin` still simulates. Real data comes from the daemon's
   transports, not from the plugin trait.
 - **Serial and SocketCAN are not tested on real hardware.** They are tested against a pseudo-terminal

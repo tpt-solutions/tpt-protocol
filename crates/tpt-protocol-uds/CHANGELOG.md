@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-11
+
 ### Added
+
 - Negative responses (`0x7F`): the requested SID and the negative response code. They
   normalize to a `Bad`-quality point.
 - Services: ReadDTCInformation, RoutineControl, RequestDownload, RequestUpload,
@@ -16,14 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UdsEncoder` (`FrameEncoder`), with round-trip tests. Structured property tests, a
   differential example (`examples/diff_decode.rs`) checked against udsoncan in CI, and a
   runnable `parse_uds` example.
-
-### Changed
-- `0x14` takes a group of DTC, not a sub-function.
-- Responses echo the sub-function unchanged.
-
-## [0.1.0] - 2026-07-30
-
-### Added
 - Initial release: ISO 14229 (UDS) diagnostic-services parser in the TPT Protocol suite.
 - `UdsSid` enum covering DiagnosticSessionControl (0x10), EcuReset (0x11), ClearDiagnosticInformation (0x14), ReadDataByIdentifier (0x22), ReadMemoryByAddress (0x23), SecurityAccess (0x27), CommunicationControl (0x28), WriteDataByIdentifier (0x2E), TestPresenter (0x3E), plus `Response(sid)` and `Unknown(sid)` envelopes, with `raw_value`/`is_response`/`Display`.
 - `SubFunction` enum (`None`, `Request(u8)`, `Response(u8)`) parsed for the sub-function-bearing SIDs (0x10/0x11/0x14/0x27/0x28/0x3E and their 0x40 responses).
@@ -32,3 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `UdsNormalizer` implementing `DataNormalizer`, mapping frames to TUP `DataPoint`s with a SID-based `point_id` and Int/Bytes values by data length.
 - `#![no_std]` + `alloc` implementation.
 - Unit tests for parsing, normalization, and validator states, plus a `proptest` fuzz test asserting `parse` never panics on arbitrary input.
+
+### Changed
+
+- `0x14` takes a group of DTC, not a sub-function.
+- Responses echo the sub-function unchanged.
