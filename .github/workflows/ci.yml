@@ -53,7 +53,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace
+      # Examples are skipped here: on Windows, linking every example in every
+      # crate hits LNK1104 (output exe locked by another process). The `clippy`
+      # job already compiles all examples on Linux via `--all-targets`.
+      - run: cargo test --workspace --lib --bins --tests
 
   docs:
     runs-on: ubuntu-latest
