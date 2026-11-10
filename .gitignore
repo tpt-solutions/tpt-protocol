@@ -8,3 +8,6 @@
 # Node / SvelteKit (ui-web)
 node_modules/
 .svelte-kit/
+
+# Python bytecode from the scripts/ test harnesses
+__pycache__/
