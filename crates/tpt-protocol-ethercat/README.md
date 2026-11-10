@@ -1,7 +1,7 @@
 # tpt-protocol-ethercat
 
 High-speed EtherCAT industrial factory-automation protocol parser, validator, and
-TUP normalizer for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol)
+TUP normalizer for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
 suite.
 
 Published to crates.io (`publish` unset).

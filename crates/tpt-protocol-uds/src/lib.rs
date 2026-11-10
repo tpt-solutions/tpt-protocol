@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// UDS Service Identifier.
@@ -83,6 +83,11 @@ impl UdsSid {
 
     fn is_response(&self) -> bool {
         matches!(self, Self::Response(_) | Self::NegativeResponse)
+    }
+
+    /// The SID byte as it appears on the wire (a response keeps its 0x40 bit).
+    pub fn value(&self) -> u8 {
+        self.raw_value()
     }
 
     fn raw_value(&self) -> u8 {
@@ -184,6 +189,46 @@ fn has_sub_function(sid_byte: u8) -> bool {
             | 0x7E
             | 0xC5
     )
+}
+
+/// Writes a [`UdsFrame`] as ISO 14229 wire bytes: the SID, then the
+/// sub-function (with `suppressPosRsp` as bit 7 on requests), then the data.
+/// The inverse of [`UdsParser`] for every frame the parser produces.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct UdsEncoder;
+
+impl UdsEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for UdsEncoder {
+    type Frame = UdsFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::with_capacity(2 + frame.data.len());
+        out.push(frame.sid.raw_value());
+        match frame.sub_function {
+            SubFunction::None => {}
+            SubFunction::Request(sf) => {
+                if sf & 0x80 != 0 {
+                    return Err(Error::Parse(format!(
+                        "UDS sub-function 0x{sf:02X} has bit 7 set; use suppress_positive_response"
+                    )));
+                }
+                let suppress = if frame.suppress_positive_response {
+                    0x80
+                } else {
+                    0
+                };
+                out.push(sf | suppress);
+            }
+            SubFunction::Response(sf) => out.push(sf),
+        }
+        out.extend_from_slice(&frame.data);
+        Ok(out)
+    }
 }
 
 /// UDS frame parser.
@@ -551,6 +596,87 @@ mod fuzz {
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// A request or response built from known service IDs (with and without a
+    /// sub-function), plus a negative response (0x7F, SID, NRC) in some cases.
+    fn uds_frame() -> impl Strategy<Value = Vec<u8>> {
+        const SIDS: &[u8] = &[
+            0x10, 0x11, 0x14, 0x19, 0x22, 0x27, 0x2E, 0x31, 0x34, 0x36, 0x37, 0x3E, 0x85,
+        ];
+        (
+            0usize..SIDS.len(),
+            any::<u8>(),
+            proptest::collection::vec(any::<u8>(), 0..32),
+            any::<u8>(),
+            0u8..4,
+        )
+            .prop_map(|(idx, sf, data, nrc, shape)| {
+                let sid = SIDS[idx];
+                match shape {
+                    // Negative response: 0x7F, requested SID, NRC.
+                    0 => alloc::vec![0x7F, sid, nrc],
+                    // Request or response with a sub-function byte.
+                    1 => {
+                        let mut out = alloc::vec![sid, sf];
+                        out.extend_from_slice(&data);
+                        out
+                    }
+                    // Request or response without a sub-function.
+                    2 => {
+                        let mut out = alloc::vec![sid];
+                        out.extend_from_slice(&data);
+                        out
+                    }
+                    // Response to a service that carries a sub-function.
+                    _ => {
+                        let mut out = alloc::vec![sid | 0x40, sf];
+                        out.extend_from_slice(&data);
+                        out
+                    }
+                }
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_uds() -> impl Strategy<Value = Vec<u8>> {
+        (uds_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_uds_never_panics(bytes in mutated_uds()) {
+            let _ = UdsParser::new().parse(&bytes);
+        }
+
+        #[test]
+        fn parsed_uds_frames_encode_back_to_the_same_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 0..64)
+        ) {
+            if let Ok(frame) = UdsParser::new().parse(&bytes) {
+                prop_assert_eq!(UdsEncoder::new().encode(&frame).unwrap(), bytes);
+            }
+        }
+
+        #[test]
+        fn well_formed_uds_never_panics_in_the_normalizer(bytes in uds_frame()) {
+            if let Ok(frame) = UdsParser::new().parse(&bytes) {
+                let _ = UdsNormalizer::new().normalize(&frame);
+            }
         }
     }
 }

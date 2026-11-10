@@ -2,7 +2,7 @@
 
 IEEE 11073 SDC (Service-Oriented Device Connectivity) bedside medical-device
 protocol parsing, validation, and TUP normalisation for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 IEEE 11073 SDC defines a service-oriented exchange for medical devices (vital-sign
 monitors, infusion pumps, etc.) over networked transports. TPT decodes the binary

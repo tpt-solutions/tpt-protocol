@@ -1,7 +1,7 @@
 # tpt-protocol-knx
 
 KNX smart-building protocol parsing, validation, and TUP normalisation for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 KNX is the standard wired/wireless bus for home and building automation
 (lighting, HVAC, shading, metering). TPT decodes a cEMI-like frame header, resolves

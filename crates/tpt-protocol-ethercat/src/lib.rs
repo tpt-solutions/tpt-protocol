@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// EtherCAT datagram command (IEC 61158-4-12).
@@ -142,6 +142,91 @@ const DATAGRAM_HEADER: usize = 10;
 const WKC: usize = 2;
 /// EtherCAT header (2 bytes) plus the datagram section length.
 const HEADER: usize = 2;
+
+/// Writes an [`EthercatFrame`] as wire bytes: the little-endian header (the
+/// section length and type), then each datagram with its header, data and
+/// working counter. The "more follows" bit is set on every datagram but the
+/// last, and the section length is computed from the datagrams, so both come
+/// from the datagram list rather than the stored fields.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct EthercatEncoder;
+
+impl EthercatEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for EthercatEncoder {
+    type Frame = EthercatFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.datagrams.is_empty() {
+            return Err(Error::Parse("EtherCAT frame has no datagrams".into()));
+        }
+        if frame.eth_type != 1 {
+            return Err(Error::Parse(format!(
+                "EtherCAT type {} cannot be encoded, only command frames (1)",
+                frame.eth_type
+            )));
+        }
+
+        let mut section = Vec::new();
+        let count = frame.datagrams.len();
+        for (i, datagram) in frame.datagrams.iter().enumerate() {
+            let data_len = datagram.data.len();
+            if data_len > 0x07FF {
+                return Err(Error::Parse(format!(
+                    "EtherCAT datagram data of {data_len} bytes exceeds 2047"
+                )));
+            }
+            let mut flags = data_len as u16;
+            if i + 1 < count {
+                flags |= 0x8000;
+            }
+            if datagram.circulating {
+                flags |= 0x4000;
+            }
+            let cmd = match datagram.cmd {
+                EcCmd::Aprd => 1,
+                EcCmd::Apwr => 2,
+                EcCmd::Aprw => 3,
+                EcCmd::Fprd => 4,
+                EcCmd::Fpwr => 5,
+                EcCmd::Fprw => 6,
+                EcCmd::Brd => 7,
+                EcCmd::Bwr => 8,
+                EcCmd::Brw => 9,
+                EcCmd::Lrd => 10,
+                EcCmd::Lwr => 11,
+                EcCmd::Lrw => 12,
+                EcCmd::Armw => 13,
+                EcCmd::Frmw => 14,
+                EcCmd::Unknown(v) => v,
+            };
+            section.push(cmd);
+            section.push(datagram.index);
+            section.extend_from_slice(&datagram.adp.to_le_bytes());
+            section.extend_from_slice(&datagram.ado.to_le_bytes());
+            section.extend_from_slice(&flags.to_le_bytes());
+            section.extend_from_slice(&datagram.irq.to_le_bytes());
+            section.extend_from_slice(&datagram.data);
+            section.extend_from_slice(&datagram.working_counter.to_le_bytes());
+        }
+
+        if section.len() > 0x07FF {
+            return Err(Error::Parse(format!(
+                "EtherCAT section of {} bytes exceeds the 11-bit length",
+                section.len()
+            )));
+        }
+        let header = (section.len() as u16) | (u16::from(frame.eth_type) << 12);
+        let mut out = Vec::with_capacity(HEADER + section.len());
+        out.extend_from_slice(&header.to_le_bytes());
+        out.extend_from_slice(&section);
+        Ok(out)
+    }
+}
 
 /// Parses EtherCAT frames.
 #[derive(Clone, Debug, Default)]
@@ -535,12 +620,99 @@ mod fuzz {
     use proptest::prelude::*;
 
     proptest! {
+        /// Parsing, encoding and parsing again gives the same frame. The bytes
+        /// may differ (the parser ignores reserved header bits), so the
+        /// comparison is on frames.
+        #[test]
+        fn encode_round_trips_parsed_frames(bytes in ethercat_frame()) {
+            if let Ok(frame) = EthercatParser::new().parse(&bytes) {
+                let encoded = EthercatEncoder::new().encode(&frame).unwrap();
+                prop_assert_eq!(EthercatParser::new().parse(&encoded).unwrap(), frame);
+            }
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = EthercatParser::new();
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// An EtherCAT command frame: a little-endian header (type 1, length equal
+    /// to the datagram chain) and one to three datagrams. Each datagram has
+    /// its data length and a "more follows" bit, and only the last one clears
+    /// that bit.
+    fn ethercat_frame() -> impl Strategy<Value = Vec<u8>> {
+        proptest::collection::vec(
+            (
+                any::<u8>(),
+                any::<u8>(),
+                any::<u16>(),
+                any::<u16>(),
+                0u16..64,
+                any::<u16>(),
+                proptest::collection::vec(any::<u8>(), 0..64),
+            ),
+            1..4,
+        )
+        .prop_map(|datagrams| {
+            let count = datagrams.len();
+            let mut section = Vec::new();
+            for (i, (cmd, index, adp, ado, data_len, irq, mut data)) in
+                datagrams.into_iter().enumerate()
+            {
+                data.resize(data_len as usize, 0);
+                let more = if i + 1 < count { 0x8000u16 } else { 0 };
+                let flags = (data_len & 0x07FF) | more;
+                section.push(cmd);
+                section.push(index);
+                section.extend_from_slice(&adp.to_le_bytes());
+                section.extend_from_slice(&ado.to_le_bytes());
+                section.extend_from_slice(&flags.to_le_bytes());
+                section.extend_from_slice(&irq.to_le_bytes());
+                section.extend_from_slice(&data);
+                // Working counter.
+                section.extend_from_slice(&0u16.to_le_bytes());
+            }
+            let header = (section.len() as u16 & 0x07FF) | (1 << 12);
+            let mut out = header.to_le_bytes().to_vec();
+            out.extend_from_slice(&section);
+            out
+        })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_ethercat() -> impl Strategy<Value = Vec<u8>> {
+        (ethercat_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_ethercat_never_panics(bytes in mutated_ethercat()) {
+            let _ = EthercatParser::new().parse(&bytes);
+            let _ = EthercatParser::new().try_parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_ethercat_never_panics_in_the_normalizer(bytes in ethercat_frame()) {
+            if let Ok(frame) = EthercatParser::new().parse(&bytes) {
+                let _ = EthercatNormalizer::new().normalize(&frame);
+            }
         }
     }
 }

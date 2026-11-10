@@ -1,7 +1,7 @@
 # tpt-protocol-isobus
 
 ISO 11783 (ISOBUS) agricultural-vehicle protocol parsing, validation, and TUP
-normalisation for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+normalisation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ISOBUS is the in-cab network standard for agricultural and forestry equipment,
 built on a 29-bit CAN identifier shared with SAE J1939. TPT decodes the CAN ID into

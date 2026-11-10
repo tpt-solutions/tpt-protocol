@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// ISOBUS (ISO 11783) Parameter Group Number.
@@ -135,6 +135,35 @@ impl fmt::Display for IsobusFrame {
                 None => "-".into(),
             },
         )
+    }
+}
+
+/// Writes an [`IsobusFrame`] as the CAN frame body the parser reads: the
+/// 32-bit identifier (big-endian, written as stored in `can_id`), then up to
+/// eight data bytes. The inverse of [`IsobusParser`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct IsobusEncoder;
+
+impl IsobusEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for IsobusEncoder {
+    type Frame = IsobusFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.payload.len() > 8 {
+            return Err(Error::Parse(format!(
+                "ISOBUS payload too large: {} bytes, max 8",
+                frame.payload.len(),
+            )));
+        }
+        let mut out = Vec::with_capacity(4 + frame.payload.len());
+        out.extend_from_slice(&frame.can_id.to_be_bytes());
+        out.extend_from_slice(&frame.payload);
+        Ok(out)
     }
 }
 
@@ -268,10 +297,18 @@ impl IsobusNormalizer {
     }
 }
 
-impl DataNormalizer for IsobusNormalizer {
-    type Frame = IsobusFrame;
-
-    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+impl IsobusNormalizer {
+    /// The points a frame carries. The engine and vehicle PGNs that ISOBUS shares with
+    /// J1939 give their signals in their units, with the not-available value of each
+    /// left out. Other PGNs give their raw payload as bytes; a number is not guessed.
+    pub fn points(&self, frame: &IsobusFrame) -> Result<Vec<DataPoint>, Error> {
+        if frame.payload.is_empty() {
+            // No payload means no measurement; zero would read as a real value.
+            return Err(Error::Normalize(format!(
+                "isobus pgn {:?} carries no data",
+                frame.pgn
+            )));
+        }
         let device_id = match frame.name {
             Some(n) => format!(
                 "isobus:0x{:02X}:{:03X}:{:06X}",
@@ -279,36 +316,112 @@ impl DataNormalizer for IsobusNormalizer {
             ),
             None => format!("isobus:0x{:02X}", frame.sa),
         };
-        let point_id = format!("pgn:{}", frame.pgn);
-        let timestamp = 0;
-
-        let value = if frame.payload.len() >= 4 {
-            // Little-endian on the wire.
-            let raw = u32::from_le_bytes([
-                frame.payload[0],
-                frame.payload[1],
-                frame.payload[2],
-                frame.payload[3],
-            ]);
-            TupValue::Int(raw as i64)
-        } else if !frame.payload.is_empty() {
-            TupValue::Bytes(frame.payload.clone())
-        } else {
-            // No payload means no measurement; zero would read as a real value.
+        let d = frame.payload.as_slice();
+        let mut out = Vec::new();
+        let mut push = |pgn: u32, name: &str, value: TupValue, unit: Option<&str>| {
+            let mut dp = DataPoint::new(
+                SourceProtocol::Isobus,
+                device_id.clone(),
+                format!("pgn:0x{pgn:05X}.{name}"),
+                0,
+                value,
+                Quality::Good,
+            );
+            dp.unit = unit.map(alloc::string::String::from);
+            out.push(dp);
+        };
+        match frame.pgn {
+            // EEC1 (PGN 0xF004): engine speed, SPN 190, bytes 4-5, 0.125 rpm per bit.
+            IsobusPgn::Raw(0xF004) => {
+                if let Some(raw) = le_u16(d, 3).filter(|&v| v != 0xFFFF) {
+                    push(
+                        0xF004,
+                        "engine_speed",
+                        TupValue::Float(f64::from(raw) * 0.125),
+                        Some("rpm"),
+                    );
+                }
+            }
+            // ET1 (PGN 0xFEEE): engine coolant temperature, SPN 110, byte 1, 1 degC, -40 offset.
+            IsobusPgn::Raw(0xFEEE) => {
+                if let Some(raw) = d.first().copied().filter(|&v| v != 0xFF) {
+                    push(
+                        0xFEEE,
+                        "coolant_temp",
+                        TupValue::Float(f64::from(raw) - 40.0),
+                        Some("Cel"),
+                    );
+                }
+            }
+            // CCVS (PGN 0xFEF1): wheel-based vehicle speed, SPN 84, bytes 2-3, 1/256 km/h.
+            IsobusPgn::Raw(0xFEF1) => {
+                if let Some(raw) = le_u16(d, 1).filter(|&v| v != 0xFFFF) {
+                    push(
+                        0xFEF1,
+                        "wheel_speed",
+                        TupValue::Float(f64::from(raw) / 256.0),
+                        Some("km/h"),
+                    );
+                }
+            }
+            // Fuel economy (PGN 0xFEE9): fuel rate, SPN 183, bytes 1-2, 0.05 L/h per bit.
+            IsobusPgn::Raw(0xFEE9) => {
+                if let Some(raw) = le_u16(d, 0).filter(|&v| v != 0xFFFF) {
+                    push(
+                        0xFEE9,
+                        "fuel_rate",
+                        TupValue::Float(f64::from(raw) * 0.05),
+                        Some("L/h"),
+                    );
+                }
+            }
+            other => {
+                let name = match other {
+                    IsobusPgn::Raw(v) => alloc::format!("0x{v:05X}"),
+                    named => alloc::format!("{named}"),
+                };
+                out.push(raw_point(&device_id, &name, frame.payload.clone()));
+            }
+        }
+        if out.is_empty() {
             return Err(Error::Normalize(format!(
-                "isobus pgn {:?} carries no data",
+                "isobus pgn {:?} has no available signal",
                 frame.pgn
             )));
-        };
+        }
+        Ok(out)
+    }
+}
 
-        Ok(DataPoint::new(
-            SourceProtocol::Isobus,
-            device_id,
-            point_id,
-            timestamp,
-            value,
-            Quality::Good,
-        ))
+/// Reads a little-endian u16 at `at`, or `None` when the payload is too short.
+fn le_u16(data: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes([*data.get(at)?, *data.get(at + 1)?]))
+}
+
+/// The point that carries an unknown PGN's payload as bytes.
+fn raw_point(device_id: &str, pgn_name: &str, payload: Vec<u8>) -> DataPoint {
+    DataPoint::new(
+        SourceProtocol::Isobus,
+        device_id,
+        alloc::format!("pgn:{pgn_name}.payload"),
+        0,
+        TupValue::Bytes(payload),
+        Quality::Good,
+    )
+}
+
+impl DataNormalizer for IsobusNormalizer {
+    type Frame = IsobusFrame;
+
+    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+        self.points(frame)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Normalize("isobus frame has no point".into()))
+    }
+
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        self.points(frame)
     }
 }
 
@@ -407,13 +520,25 @@ mod tests {
 
     #[test]
     fn normalize_reads_little_endian_payload() {
-        // ISO 11783 multi-byte fields are little-endian: [0x01, 0x02] means 0x0201.
+        // EEC1 engine speed is bytes 4-5, little-endian: [0x80, 0x0C] is 0x0C80 = 3200 raw,
+        // 400 rpm at 0.125 rpm per bit.
         let parser = IsobusParser::new();
         let normalizer = IsobusNormalizer::new();
-        let bytes = make_isobus_frame(0xF0, 0x04, 0x30, &[0x01, 0x02, 0x00, 0x00]);
+        let bytes = make_isobus_frame(0xF0, 0x04, 0x30, &[0, 0, 0, 0x80, 0x0C, 0, 0, 0]);
         let frame = parser.parse(&bytes).unwrap();
         let dp = normalizer.normalize(&frame).unwrap();
-        assert_eq!(dp.value, TupValue::Int(0x0201));
+        assert_eq!(dp.point_id, "pgn:0x0F004.engine_speed");
+        assert_eq!(dp.value, TupValue::Float(400.0));
+    }
+
+    #[test]
+    fn unknown_pgns_give_their_payload_as_bytes() {
+        let parser = IsobusParser::new();
+        let normalizer = IsobusNormalizer::new();
+        let bytes = make_isobus_frame(0xEA, 0x12, 0x30, &[0x01, 0x02]);
+        let frame = parser.parse(&bytes).unwrap();
+        let dp = normalizer.normalize(&frame).unwrap();
+        assert_eq!(dp.value, TupValue::Bytes(alloc::vec![0x01, 0x02]));
     }
 
     #[test]
@@ -425,7 +550,7 @@ mod tests {
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::Isobus);
         assert_eq!(dp.device_id, "isobus:0x30");
-        assert_eq!(dp.point_id, "pgn:TP.CM");
+        assert_eq!(dp.point_id, "pgn:TP.CM.payload");
     }
 
     #[test]
@@ -468,12 +593,65 @@ mod fuzz {
     use proptest::prelude::*;
 
     proptest! {
+        /// The identifier and payload are kept exactly, so parse then encode
+        /// gives back the input bytes.
+        #[test]
+        fn parsed_frames_encode_back_to_the_same_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 4..16)
+        ) {
+            if let Ok(frame) = IsobusParser::new().parse(&bytes) {
+                prop_assert_eq!(IsobusEncoder::new().encode(&frame).unwrap(), bytes);
+            }
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = IsobusParser::new();
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// A 29-bit CAN identifier (big-endian, as received) with up to eight data
+    /// bytes. The identifier is random, so both PDU1 and PDU2 are covered.
+    fn isobus_frame() -> impl Strategy<Value = Vec<u8>> {
+        (any::<u32>(), proptest::collection::vec(any::<u8>(), 0..=8)).prop_map(|(id, payload)| {
+            let mut out = (id & 0x1FFF_FFFF).to_be_bytes().to_vec();
+            out.extend_from_slice(&payload);
+            out
+        })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_isobus() -> impl Strategy<Value = Vec<u8>> {
+        (isobus_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_isobus_never_panics(bytes in mutated_isobus()) {
+            let _ = IsobusParser::new().parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_isobus_never_panics_in_the_normalizer(bytes in isobus_frame()) {
+            if let Ok(frame) = IsobusParser::new().parse(&bytes) {
+                let _ = IsobusNormalizer::new().normalize(&frame);
+            }
         }
     }
 }

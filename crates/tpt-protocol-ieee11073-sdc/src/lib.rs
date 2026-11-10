@@ -19,7 +19,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// SOAP 1.2 envelope namespace.
@@ -388,6 +388,80 @@ fn numeric_observations(body: &Element) -> Vec<NumericObservation> {
         .collect()
 }
 
+/// Escapes text for an XML element body or a double-quoted attribute value.
+fn xml_escape(text: &str) -> alloc::string::String {
+    let mut out = alloc::string::String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// Writes an [`SdcFrame`] as a SOAP 1.2 envelope with WS-Addressing Action and
+/// MessageID headers (omitted when both are unset), and one body operation.
+/// Each numeric observation is written as a `NumericMetricState` with a
+/// `DescriptorHandle` attribute and a `MetricValue` child, the shape the
+/// parser reads. The output is therefore a message the parser accepts, not a
+/// copy of the original XML.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SdcEncoder;
+
+impl SdcEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for SdcEncoder {
+    type Frame = SdcFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.operation.is_empty() {
+            return Err(Error::Parse("SDC operation name is empty".into()));
+        }
+        let mut out = alloc::format!("<s:Envelope xmlns:s=\"{NS_SOAP}\" xmlns:wsa=\"{NS_WSA}\">");
+        if frame.action.is_some() || frame.message_id.is_some() {
+            out.push_str("<s:Header>");
+            if let Some(action) = &frame.action {
+                out.push_str(&alloc::format!(
+                    "<wsa:Action>{}</wsa:Action>",
+                    xml_escape(action)
+                ));
+            }
+            if let Some(message_id) = &frame.message_id {
+                out.push_str(&alloc::format!(
+                    "<wsa:MessageID>{}</wsa:MessageID>",
+                    xml_escape(message_id)
+                ));
+            }
+            out.push_str("</s:Header>");
+        }
+        out.push_str(&alloc::format!("<s:Body><{}>", frame.operation));
+        for observation in &frame.observations {
+            if !observation.value.is_finite() {
+                return Err(Error::Parse("SDC observation value must be finite".into()));
+            }
+            out.push_str(&alloc::format!(
+                "<NumericMetricState DescriptorHandle=\"{}\"><MetricValue Value=\"{}\"/></NumericMetricState>",
+                xml_escape(&observation.descriptor_handle),
+                observation.value,
+            ));
+        }
+        out.push_str(&alloc::format!(
+            "</{}></s:Body></s:Envelope>",
+            frame.operation
+        ));
+        Ok(out.into_bytes())
+    }
+}
+
 /// Parses SDC SOAP messages.
 pub struct SdcParser;
 
@@ -680,12 +754,154 @@ mod fuzz {
     use super::*;
     use proptest::prelude::*;
 
+    /// A message the encoder writes: optional WS-Addressing headers (no
+    /// leading or trailing spaces, since the parser trims them), one of the
+    /// operations, and observations with handles that need escaping.
+    fn sdc_model() -> impl Strategy<Value = SdcFrame> {
+        (
+            proptest::option::of("[a-zA-Z0-9:/&<>\"'._-]{0,20}"),
+            proptest::option::of("[a-zA-Z0-9&<>\"'._-]{0,20}"),
+            0usize..4,
+            proptest::collection::vec(("[a-zA-Z0-9&<>\"'._-]{1,10}", -1.0e9f64..1.0e9), 0..5),
+        )
+            .prop_map(|(action, message_id, operation, observations)| SdcFrame {
+                action,
+                message_id,
+                operation: [
+                    "GetMdib",
+                    "GetMdDescription",
+                    "GetContextStates",
+                    "Notification",
+                ][operation]
+                    .to_string(),
+                observations: observations
+                    .into_iter()
+                    .map(|(descriptor_handle, value)| NumericObservation {
+                        descriptor_handle,
+                        value,
+                    })
+                    .collect(),
+            })
+    }
+
     proptest! {
+        /// Encoding a model message and parsing the bytes gives back the same frame.
+        #[test]
+        fn encoded_messages_parse_back_to_the_same_model(frame in sdc_model()) {
+            let bytes = SdcEncoder::new().encode(&frame).unwrap();
+            prop_assert_eq!(SdcParser.parse(&bytes).unwrap(), frame);
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = SdcParser.parse(&bytes);
         }
+    }
+
+    /// A SOAP 1.2 envelope with WS-Addressing Action and MessageID headers
+    /// (present or absent) and one body operation carrying a numeric value.
+    fn sdc_envelope() -> impl Strategy<Value = Vec<u8>> {
+        const OPERATIONS: [&str; 4] = [
+            "GetMdib",
+            "GetMdDescription",
+            "GetContextStates",
+            "Notification",
+        ];
+        (
+            0usize..OPERATIONS.len(),
+            "[a-zA-Z0-9:/._-]{0,24}",
+            "[a-zA-Z0-9-]{0,24}",
+            any::<i32>(),
+            any::<bool>(),
+        )
+            .prop_map(|(op, action, message_id, value, with_header)| {
+                let op = OPERATIONS[op];
+                let header = if with_header {
+                    alloc::format!(
+                        "<s:Header><wsa:Action>{action}</wsa:Action><wsa:MessageID>{message_id}</wsa:MessageID></s:Header>"
+                    )
+                } else {
+                    alloc::string::String::new()
+                };
+                alloc::format!(
+                    "<s:Envelope xmlns:s=\"{}\" xmlns:wsa=\"{}\">{header}<s:Body><{op}><Value>{value}</Value></{op}></s:Body></s:Envelope>",
+                    NS_SOAP,
+                    NS_WSA,
+                )
+                .into_bytes()
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed envelope.
+    fn mutated_sdc() -> impl Strategy<Value = Vec<u8>> {
+        (sdc_envelope(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_sdc_never_panics(bytes in mutated_sdc()) {
+            let _ = SdcParser.parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_sdc_never_panics_in_the_normalizer(bytes in sdc_envelope()) {
+            if let Ok(frame) = SdcParser.parse(&bytes) {
+                let _ = SdcNormalizer.normalize(&frame);
+            }
+        }
+    }
+}
+
+impl SdcParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SdcParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SdcValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SdcValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SdcNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SdcNormalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }

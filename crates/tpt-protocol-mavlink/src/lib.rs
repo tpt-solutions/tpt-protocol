@@ -247,42 +247,153 @@ impl MavlinkNormalizer {
     }
 }
 
-impl DataNormalizer for MavlinkNormalizer {
-    type Frame = MavlinkFrame;
-
-    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+impl MavlinkNormalizer {
+    /// Every point the frame carries. Heartbeat, system status, attitude and GPS
+    /// messages give one point per field, with its unit. Other messages give the
+    /// single point they always gave.
+    pub fn points(&self, frame: &MavlinkFrame) -> Vec<DataPoint> {
         let device_id = format!("mavlink:{}:{}", frame.system_id, frame.component_id);
-        let timestamp = 0; // caller should set a real timestamp
+        let mut out = Vec::new();
+        let mut push = |name: &str, value: TupValue, unit: Option<&str>| {
+            let mut dp = DataPoint::new(
+                SourceProtocol::Mavlink,
+                device_id.clone(),
+                name,
+                0, // caller should set a real timestamp
+                value,
+                Quality::Good,
+            );
+            dp.unit = unit.map(String::from);
+            out.push(dp);
+        };
 
-        let (point_id, value): (String, TupValue) = match &frame.message {
-            MavMessage::HEARTBEAT(d) => (
-                "HEARTBEAT.custom_mode".into(),
-                TupValue::Int(d.custom_mode as i64),
-            ),
-            MavMessage::SYS_STATUS(d) => (
-                "SYS_STATUS.voltage_battery".into(),
-                TupValue::Int(d.voltage_battery as i64),
-            ),
-            MavMessage::ATTITUDE(d) => ("ATTITUDE.roll".into(), TupValue::Float(d.roll as f64)),
-            MavMessage::GPS_RAW_INT(d) => ("GPS_RAW_INT.lat".into(), TupValue::Int(d.lat as i64)),
+        match &frame.message {
+            MavMessage::HEARTBEAT(d) => {
+                push(
+                    "HEARTBEAT.custom_mode",
+                    TupValue::Int(i64::from(d.custom_mode)),
+                    None,
+                );
+                push(
+                    "HEARTBEAT.type",
+                    TupValue::Int(i64::from(d.mavtype as u8)),
+                    None,
+                );
+                push(
+                    "HEARTBEAT.autopilot",
+                    TupValue::Int(i64::from(d.autopilot as u8)),
+                    None,
+                );
+                push(
+                    "HEARTBEAT.base_mode",
+                    TupValue::Int(i64::from(d.base_mode.bits())),
+                    None,
+                );
+                push(
+                    "HEARTBEAT.system_status",
+                    TupValue::Int(i64::from(d.system_status as u8)),
+                    None,
+                );
+                push(
+                    "HEARTBEAT.mavlink_version",
+                    TupValue::Int(i64::from(d.mavlink_version)),
+                    None,
+                );
+            }
+            MavMessage::SYS_STATUS(d) => {
+                push(
+                    "SYS_STATUS.voltage_battery",
+                    TupValue::Int(i64::from(d.voltage_battery)),
+                    Some("mV"),
+                );
+                push(
+                    "SYS_STATUS.current_battery",
+                    TupValue::Int(i64::from(d.current_battery)),
+                    Some("cA"),
+                );
+                push(
+                    "SYS_STATUS.battery_remaining",
+                    TupValue::Int(i64::from(d.battery_remaining)),
+                    Some("%"),
+                );
+                push(
+                    "SYS_STATUS.load",
+                    TupValue::Int(i64::from(d.load)),
+                    Some("0.1%"),
+                );
+            }
+            MavMessage::ATTITUDE(d) => {
+                push(
+                    "ATTITUDE.roll",
+                    TupValue::Float(f64::from(d.roll)),
+                    Some("rad"),
+                );
+                push(
+                    "ATTITUDE.pitch",
+                    TupValue::Float(f64::from(d.pitch)),
+                    Some("rad"),
+                );
+                push(
+                    "ATTITUDE.yaw",
+                    TupValue::Float(f64::from(d.yaw)),
+                    Some("rad"),
+                );
+            }
+            MavMessage::GPS_RAW_INT(d) => {
+                // Latitude and longitude are 1e-7 degrees, altitude is millimetres.
+                push(
+                    "GPS_RAW_INT.lat",
+                    TupValue::Float(f64::from(d.lat) * 1e-7),
+                    Some("deg"),
+                );
+                push(
+                    "GPS_RAW_INT.lon",
+                    TupValue::Float(f64::from(d.lon) * 1e-7),
+                    Some("deg"),
+                );
+                push(
+                    "GPS_RAW_INT.alt",
+                    TupValue::Float(f64::from(d.alt) * 1e-3),
+                    Some("m"),
+                );
+                push(
+                    "GPS_RAW_INT.satellites_visible",
+                    TupValue::Int(i64::from(d.satellites_visible)),
+                    None,
+                );
+                push(
+                    "GPS_RAW_INT.fix_type",
+                    TupValue::Int(i64::from(d.fix_type as u8)),
+                    None,
+                );
+            }
             _ => {
                 let value = if frame.payload.is_empty() {
-                    TupValue::Int(frame.message_id as i64)
+                    TupValue::Int(i64::from(frame.message_id))
                 } else {
                     TupValue::Bytes(frame.payload.clone())
                 };
-                (format!("msg:{}", frame.message_name), value)
+                push(&format!("msg:{}", frame.message_name), value, None);
             }
-        };
+        }
+        out
+    }
+}
 
-        Ok(DataPoint::new(
-            SourceProtocol::Mavlink,
-            device_id,
-            point_id,
-            timestamp,
-            value,
-            Quality::Good,
-        ))
+impl DataNormalizer for MavlinkNormalizer {
+    type Frame = MavlinkFrame;
+
+    /// The first point of the frame (the heartbeat's `custom_mode`, for example).
+    /// Use [`DataNormalizer::normalize_all`] for every field.
+    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+        self.points(frame)
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Normalize("MAVLink message has no point".into()))
+    }
+
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        Ok(self.points(frame))
     }
 }
 
@@ -424,7 +535,35 @@ mod tests {
             .unwrap();
         let dp = MavlinkNormalizer::new().normalize(&frame).unwrap();
         assert_eq!(dp.point_id, "GPS_RAW_INT.lat");
-        assert_eq!(dp.value, TupValue::Int(-331_234_567));
+        assert_eq!(dp.unit.as_deref(), Some("deg"));
+        let TupValue::Float(lat) = dp.value else {
+            panic!("latitude is a float in degrees")
+        };
+        assert!((lat + 33.123_456_7).abs() < 1e-9, "{lat}");
+    }
+
+    #[test]
+    fn heartbeat_gives_every_field_as_its_own_point() {
+        let frame = MavlinkParser::new()
+            .parse(&encode(WireVersion::V2, 1, 1, &heartbeat(1234)))
+            .unwrap();
+        let names: Vec<String> = MavlinkNormalizer::new()
+            .normalize_all(&frame)
+            .unwrap()
+            .into_iter()
+            .map(|dp| dp.point_id)
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "HEARTBEAT.custom_mode",
+                "HEARTBEAT.type",
+                "HEARTBEAT.autopilot",
+                "HEARTBEAT.base_mode",
+                "HEARTBEAT.system_status",
+                "HEARTBEAT.mavlink_version",
+            ]
+        );
     }
 
     #[test]

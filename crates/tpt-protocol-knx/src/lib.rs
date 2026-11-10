@@ -11,7 +11,7 @@ extern crate alloc;
 use alloc::format;
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// cEMI message code.
@@ -243,6 +243,90 @@ impl FrameParser for KnxParser {
             service_type: KnxServiceType::from_apci(apci),
             dpt,
         })
+    }
+}
+
+/// Writes a [`KnxFrame`] as a cEMI L_Data frame with no additional info. A
+/// `DptValue::Short` value sits in the low six bits of the last octet; a
+/// `DptValue::Data` value needs at least one octet. Fields the parser does
+/// not keep (repeat and frame-type bits) are written with fixed values.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KnxEncoder;
+
+impl KnxEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for KnxEncoder {
+    type Frame = KnxFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        let message_code = match frame.message_code {
+            MessageCode::LDataRequest => 0x11,
+            MessageCode::LDataConfirmation => 0x2E,
+            MessageCode::LDataIndication => 0x29,
+        };
+        let priority = match frame.priority {
+            KnxPriority::System => 0,
+            KnxPriority::Normal => 1,
+            KnxPriority::Urgent => 2,
+            KnxPriority::Low => 3,
+        };
+        if frame.hop_count > 7 {
+            return Err(Error::Parse(format!(
+                "KNX hop count {} does not fit in 3 bits",
+                frame.hop_count
+            )));
+        }
+        let apci = match frame.service_type {
+            KnxServiceType::GroupValueRead => 0,
+            KnxServiceType::GroupValueResponse => 1,
+            KnxServiceType::GroupValueWrite => 2,
+            KnxServiceType::Other(v) => v,
+        };
+        if apci > 0x0F {
+            return Err(Error::Parse(format!(
+                "KNX APCI 0x{apci:02X} is wider than 4 bits"
+            )));
+        }
+
+        let (data, short): (&[u8], u8) = match &frame.dpt {
+            DptValue::Short(v) => {
+                if *v > 0x3F {
+                    return Err(Error::Parse(format!(
+                        "KNX short value {v} does not fit in 6 bits"
+                    )));
+                }
+                (&[], *v)
+            }
+            DptValue::Data(data) => {
+                if data.is_empty() || data.len() > 254 {
+                    return Err(Error::Parse(format!(
+                        "KNX data of {} octets is outside 1..=254",
+                        data.len()
+                    )));
+                }
+                (data.as_slice(), 0)
+            }
+        };
+
+        let group_bit = if frame.destination_is_group { 0x80 } else { 0 };
+        let mut out = Vec::with_capacity(9 + data.len());
+        out.push(message_code);
+        out.push(0); // additional info length
+                     // Control 1: standard frame, not a repeat, broadcast, priority in bits 2-3.
+        out.push(0xB0 | (priority << 2));
+        // Control 2: destination type in bit 7, hop count in bits 4-6.
+        out.push(group_bit | (frame.hop_count << 4));
+        out.extend_from_slice(&frame.source.0.to_be_bytes());
+        out.extend_from_slice(&frame.destination.to_be_bytes());
+        out.push((data.len() + 1) as u8);
+        out.push((apci >> 2) & 0x03);
+        out.push(((apci & 0x03) << 6) | short);
+        out.extend_from_slice(data);
+        Ok(out)
     }
 }
 
@@ -492,7 +576,64 @@ mod fuzz {
     use super::*;
     use proptest::prelude::*;
 
+    /// A frame built from the model types, with every field the parser keeps.
+    fn knx_model_frame() -> impl Strategy<Value = KnxFrame> {
+        (
+            0usize..3,
+            0usize..4,
+            0u8..8,
+            any::<u16>(),
+            any::<u16>(),
+            any::<bool>(),
+            0u8..16,
+            (
+                any::<bool>(),
+                0u8..64,
+                proptest::collection::vec(any::<u8>(), 1..14),
+            ),
+        )
+            .prop_map(
+                |(code, priority, hop, source, destination, group, apci, (short, value, data))| {
+                    KnxFrame {
+                        message_code: match code {
+                            0 => MessageCode::LDataRequest,
+                            1 => MessageCode::LDataConfirmation,
+                            _ => MessageCode::LDataIndication,
+                        },
+                        priority: match priority {
+                            0 => KnxPriority::System,
+                            1 => KnxPriority::Normal,
+                            2 => KnxPriority::Urgent,
+                            _ => KnxPriority::Low,
+                        },
+                        hop_count: hop,
+                        source: IndividualAddress(source),
+                        destination,
+                        destination_is_group: group,
+                        service_type: match apci {
+                            0 => KnxServiceType::GroupValueRead,
+                            1 => KnxServiceType::GroupValueResponse,
+                            2 => KnxServiceType::GroupValueWrite,
+                            other => KnxServiceType::Other(other),
+                        },
+                        dpt: if short {
+                            DptValue::Short(value)
+                        } else {
+                            DptValue::Data(data)
+                        },
+                    }
+                },
+            )
+    }
+
     proptest! {
+        /// Encoding a frame and parsing the bytes gives back the same frame.
+        #[test]
+        fn encoded_frames_parse_back_to_the_same_model(frame in knx_model_frame()) {
+            let bytes = KnxEncoder::new().encode(&frame).unwrap();
+            prop_assert_eq!(KnxParser.parse(&bytes).unwrap(), frame);
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = KnxParser;
@@ -500,5 +641,103 @@ mod fuzz {
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
         }
+    }
+
+    /// A cEMI L_Data frame: message code (request, confirmation or indication),
+    /// additional info, control fields, source and group or individual
+    /// destination, NPDU length, TPCI/APCI and data. The NPDU length always
+    /// matches the data octets.
+    fn knx_frame() -> impl Strategy<Value = Vec<u8>> {
+        const CODES: [u8; 3] = [0x11, 0x2E, 0x29];
+        (
+            0usize..CODES.len(),
+            proptest::collection::vec(any::<u8>(), 0..4),
+            any::<u8>(),
+            any::<u8>(),
+            any::<[u8; 4]>(),
+            any::<[u8; 2]>(),
+            proptest::collection::vec(any::<u8>(), 0..14),
+        )
+            .prop_map(|(ci, info, ctrl1, ctrl2, addrs, tpci, data)| {
+                let mut out = alloc::vec![CODES[ci], info.len() as u8];
+                out.extend_from_slice(&info);
+                out.extend_from_slice(&[ctrl1, ctrl2]);
+                out.extend_from_slice(&addrs);
+                out.push(data.len() as u8 + 1);
+                out.extend_from_slice(&tpci);
+                out.extend_from_slice(&data);
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_knx() -> impl Strategy<Value = Vec<u8>> {
+        (knx_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_knx_never_panics(bytes in mutated_knx()) {
+            let _ = KnxParser.parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_knx_never_panics_in_the_normalizer(bytes in knx_frame()) {
+            if let Ok(frame) = KnxParser.parse(&bytes) {
+                let _ = KnxNormalizer.normalize(&frame);
+            }
+        }
+    }
+}
+
+impl KnxParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KnxParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KnxValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KnxValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl KnxNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for KnxNormalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }

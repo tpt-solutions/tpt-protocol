@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// J1939 Parameter Group Number (PGN) field.
@@ -91,6 +91,35 @@ impl fmt::Display for J1939Frame {
             self.sa,
             self.payload.len(),
         )
+    }
+}
+
+/// Writes a [`J1939Frame`] as the CAN frame body the parser reads: the 32-bit
+/// identifier (big-endian, written as stored in `can_id`), then up to eight
+/// data bytes. The inverse of [`J1939Parser`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct J1939Encoder;
+
+impl J1939Encoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for J1939Encoder {
+    type Frame = J1939Frame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.payload.len() > 8 {
+            return Err(Error::Parse(format!(
+                "J1939 payload too large: {} bytes, max 8",
+                frame.payload.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(4 + frame.payload.len());
+        out.extend_from_slice(&frame.can_id.to_be_bytes());
+        out.extend_from_slice(&frame.payload);
+        Ok(out)
     }
 }
 
@@ -215,41 +244,109 @@ impl J1939Normalizer {
     }
 }
 
-impl DataNormalizer for J1939Normalizer {
-    type Frame = J1939Frame;
-
-    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
-        let device_id = format!("j1939:0x{:02X}", frame.sa);
-        let point_id = format!("pgn:{}", frame.pgn);
-        let timestamp = 0;
-
-        let value = if frame.payload.len() >= 4 {
-            // Little-endian on the wire.
-            let raw = u32::from_le_bytes([
-                frame.payload[0],
-                frame.payload[1],
-                frame.payload[2],
-                frame.payload[3],
-            ]);
-            TupValue::Int(raw as i64)
-        } else if !frame.payload.is_empty() {
-            TupValue::Bytes(frame.payload.clone())
-        } else {
+impl J1939Normalizer {
+    /// The points a frame carries. Known PGNs give their named signals in their
+    /// units, with the "not available" value of each signal left out. Other PGNs
+    /// give their raw payload as bytes; a number is not guessed for them.
+    pub fn points(&self, frame: &J1939Frame) -> Result<Vec<DataPoint>, Error> {
+        if frame.payload.is_empty() {
             // No payload means no measurement; zero would read as a real value.
             return Err(Error::Normalize(format!(
                 "j1939 pgn {:?} carries no data",
                 frame.pgn
             )));
+        }
+        let device_id = format!("j1939:0x{:02X}", frame.sa);
+        let d = frame.payload.as_slice();
+        let mut out = Vec::new();
+        let mut push = |name: &str, value: TupValue, unit: Option<&str>| {
+            let mut dp = DataPoint::new(
+                SourceProtocol::J1939,
+                device_id.clone(),
+                format!("pgn:{}.{name}", frame.pgn),
+                0,
+                value,
+                Quality::Good,
+            );
+            dp.unit = unit.map(alloc::string::String::from);
+            out.push(dp);
         };
+        match frame.pgn {
+            // EEC1 (PGN 61444): engine speed, SPN 190, bytes 4-5 (index 3-4), 0.125 rpm
+            // per bit, little-endian, 0xFFFF not available.
+            Pgn::Eec1 => {
+                if let Some(raw) = le_u16(d, 3).filter(|&v| v != 0xFFFF) {
+                    push(
+                        "engine_speed",
+                        TupValue::Float(f64::from(raw) * 0.125),
+                        Some("rpm"),
+                    );
+                }
+            }
+            // ET1 (PGN 65262): engine coolant temperature, SPN 110, byte 1, 1 degC per bit
+            // with a -40 offset, 0xFF not available.
+            Pgn::EngineTemp1 => {
+                if let Some(raw) = d.first().copied().filter(|&v| v != 0xFF) {
+                    push(
+                        "coolant_temp",
+                        TupValue::Float(f64::from(raw) - 40.0),
+                        Some("Cel"),
+                    );
+                }
+            }
+            // CCVS (PGN 65265): wheel-based vehicle speed, SPN 84, bytes 2-3 (index 1-2),
+            // 1/256 km/h per bit, 0xFFFF not available.
+            Pgn::Ccvs => {
+                if let Some(raw) = le_u16(d, 1).filter(|&v| v != 0xFFFF) {
+                    push(
+                        "wheel_speed",
+                        TupValue::Float(f64::from(raw) / 256.0),
+                        Some("km/h"),
+                    );
+                }
+            }
+            // Fuel economy (PGN 65257): fuel rate, SPN 183, bytes 1-2 (index 0-1), 0.05 L/h
+            // per bit, 0xFFFF not available.
+            Pgn::FuelEconomy => {
+                if let Some(raw) = le_u16(d, 0).filter(|&v| v != 0xFFFF) {
+                    push(
+                        "fuel_rate",
+                        TupValue::Float(f64::from(raw) * 0.05),
+                        Some("L/h"),
+                    );
+                }
+            }
+            _ => {
+                push("payload", TupValue::Bytes(frame.payload.clone()), None);
+            }
+        }
+        if out.is_empty() {
+            return Err(Error::Normalize(format!(
+                "j1939 pgn {:?} has no available signal",
+                frame.pgn
+            )));
+        }
+        Ok(out)
+    }
+}
 
-        Ok(DataPoint::new(
-            SourceProtocol::J1939,
-            device_id,
-            point_id,
-            timestamp,
-            value,
-            Quality::Good,
-        ))
+/// Reads a little-endian u16 at `at`, or `None` when the payload is too short.
+fn le_u16(data: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes([*data.get(at)?, *data.get(at + 1)?]))
+}
+
+impl DataNormalizer for J1939Normalizer {
+    type Frame = J1939Frame;
+
+    fn normalize(&self, frame: &Self::Frame) -> Result<DataPoint, Error> {
+        self.points(frame)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Normalize("j1939 frame has no point".into()))
+    }
+
+    fn normalize_all(&self, frame: &Self::Frame) -> Result<Vec<DataPoint>, Error> {
+        self.points(frame)
     }
 }
 
@@ -356,15 +453,66 @@ mod tests {
         assert!(result.is_err());
     }
 
+    fn normalize_points(pf: u8, ps: u8, payload: &[u8]) -> Vec<DataPoint> {
+        let bytes = make_j1939_frame(pf, ps, 0x12, payload);
+        let frame = J1939Parser::new().parse(&bytes).unwrap();
+        J1939Normalizer::new().normalize_all(&frame).unwrap()
+    }
+
     #[test]
-    fn normalize_reads_little_endian_payload() {
-        // SAE J1939 multi-byte fields are little-endian: [0x01, 0x02] means 0x0201.
-        let parser = J1939Parser::new();
-        let normalizer = J1939Normalizer::new();
-        let bytes = make_j1939_frame(0xF0, 0x04, 0x12, &[0x01, 0x02, 0x00, 0x00, 0, 0, 0, 0]);
-        let frame = parser.parse(&bytes).unwrap();
-        let dp = normalizer.normalize(&frame).unwrap();
-        assert_eq!(dp.value, TupValue::Int(0x0201));
+    fn eec1_engine_speed_is_spn_190_in_bytes_4_and_5() {
+        // 0x0C80 = 3200 raw, 0.125 rpm per bit = 400 rpm. The first bytes are not speed.
+        let points = normalize_points(
+            0xF0,
+            0x04,
+            &[0xFF, 0xFF, 0xFF, 0x80, 0x0C, 0xFF, 0xFF, 0xFF],
+        );
+        assert_eq!(points.len(), 1);
+        assert_eq!(points[0].point_id, "pgn:EEC1.engine_speed");
+        assert_eq!(points[0].unit.as_deref(), Some("rpm"));
+        assert_eq!(points[0].value, TupValue::Float(400.0));
+        assert_eq!(points[0].device_id, "j1939:0x12");
+    }
+
+    #[test]
+    fn eec1_engine_speed_not_available_is_skipped() {
+        // Everything is "not available", so the frame has no point and is an error.
+        let bytes = make_j1939_frame(0xF0, 0x04, 0x12, &[0xFF; 8]);
+        let frame = J1939Parser::new().parse(&bytes).unwrap();
+        assert!(J1939Normalizer::new().normalize(&frame).is_err());
+    }
+
+    #[test]
+    fn coolant_temperature_has_a_minus_40_offset() {
+        // PGN 65262 (ET1), 0xFEEE: byte 1 is the coolant temperature, 1 degC per bit.
+        let points = normalize_points(0xFE, 0xEE, &[0x6E, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(points[0].point_id, "pgn:EngineTemp1.coolant_temp");
+        assert_eq!(points[0].value, TupValue::Float(70.0));
+    }
+
+    #[test]
+    fn wheel_speed_is_in_one_256th_km_per_hour() {
+        // PGN 65265 (CCVS), 0xFEF1: bytes 2-3 are the wheel speed.
+        let points = normalize_points(0xFE, 0xF1, &[0x00, 0x0A, 0x00, 0, 0, 0, 0, 0]);
+        assert_eq!(points[0].point_id, "pgn:CCVS.wheel_speed");
+        assert_eq!(points[0].value, TupValue::Float(10.0 / 256.0));
+    }
+
+    #[test]
+    fn fuel_rate_is_in_twentieths_of_a_litre() {
+        // PGN 65257 (fuel economy), 0xFEE9: bytes 1-2 are the fuel rate, 0.05 L/h per bit.
+        let points = normalize_points(0xFE, 0xE9, &[0x64, 0x00, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(points[0].point_id, "pgn:FuelEconomy.fuel_rate");
+        assert_eq!(points[0].value, TupValue::Float(5.0));
+    }
+
+    #[test]
+    fn unknown_pgns_give_their_payload_as_bytes() {
+        let points = normalize_points(0xEA, 0x12, &[0x01, 0x02, 0x03]);
+        assert_eq!(
+            points[0].value,
+            TupValue::Bytes(alloc::vec![0x01, 0x02, 0x03])
+        );
     }
 
     #[test]
@@ -377,7 +525,7 @@ mod tests {
         let dp = normalizer.normalize(&frame).unwrap();
         assert_eq!(dp.source_protocol, SourceProtocol::J1939);
         assert_eq!(dp.device_id, "j1939:0x12");
-        assert_eq!(dp.point_id, "pgn:EEC1");
+        assert_eq!(dp.point_id, "pgn:EEC1.engine_speed");
     }
 
     #[test]
@@ -491,6 +639,17 @@ mod fuzz {
     }
 
     proptest! {
+        /// The identifier and payload are kept exactly, so parse then encode
+        /// gives back the input bytes.
+        #[test]
+        fn parsed_frames_encode_back_to_the_same_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 4..16)
+        ) {
+            if let Ok(frame) = J1939Parser::new().parse(&bytes) {
+                prop_assert_eq!(J1939Encoder::new().encode(&frame).unwrap(), bytes);
+            }
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = J1939Parser::new();

@@ -1,6 +1,6 @@
 # tpt-protocol-uds
 
-**ISO 14229 (UDS) automotive diagnostic-services parser for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.**
+**ISO 14229 (UDS) automotive diagnostic-services parser for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.**
 
 UDS (Unified Diagnostic Services) is the ISO 14229 application-layer protocol
 used to diagnose and configure ECUs over CAN, DoIP, or K-Line. This crate is a

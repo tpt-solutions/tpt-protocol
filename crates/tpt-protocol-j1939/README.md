@@ -1,7 +1,7 @@
 # tpt-protocol-j1939
 
 SAE J1939 heavy-duty vehicle-network protocol parsing, validation, and TUP
-normalisation for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+normalisation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 J1939 is the de-facto higher-layer protocol for trucks, buses, and off-road
 machinery built on CAN. TPT decodes the 29-bit CAN identifier into priority/addressing
