@@ -1,6 +1,6 @@
 # tpt-protocol-tup
 
-**TPT Unified Protocol (TUP) — the canonical normalized schema for all [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) data.**
+**TPT Unified Protocol (TUP) — the canonical normalized schema for all [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) data.**
 
 This crate defines the TUP message envelope that all 19 protocol crates
 normalize into. A `DataPoint` is a single named, timestamped, quality-tagged

@@ -1,7 +1,7 @@
 # tpt-protocol-cli
 
 **TPT Protocol terminal UI — a [ratatui](https://ratatui.rs) live dashboard for
-protocol telemetry in the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol)
+protocol telemetry in the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
 suite.**
 
 A keyboard-driven TUI that connects to the

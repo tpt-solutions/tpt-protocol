@@ -1,6 +1,6 @@
 # tpt-protocol-ui-embedded
 
-**Native embedded UI for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol)
+**Native embedded UI for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
 daemon, built with [Slint](https://slint.dev).**
 
 A small, self-contained desktop/embedded dashboard that connects to the

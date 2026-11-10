@@ -7,7 +7,7 @@ yanked = "warn"
 ignore = [
     # Unmaintained, not a vulnerability. Reached only via ratatui 0.29 in
     # tpt-protocol-cli (a proc-macro helper). Clears when ratatui moves to
-    # 0.30+, which needs Rust 1.88 (workspace MSRV is 1.81).
+    # 0.30+, which needs Rust 1.88 (workspace MSRV is 1.85).
     { id = "RUSTSEC-2024-0436", reason = "paste unmaintained; proc-macro via ratatui 0.29 in the CLI; no fix below Rust 1.88" },
     # Build-time only. quick-xml 0.39.4 is pinned exactly by mavlink-bindgen 0.17.1,
     # a [build-dependency] of mavlink. It parses the MAVLink XML definitions we

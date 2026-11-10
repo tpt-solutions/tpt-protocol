@@ -1,6 +1,6 @@
 # tpt-protocol-ui-web
 
-**Web fleet dashboard for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol)
+**Web fleet dashboard for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
 daemon, built with [Tauri v2](https://v2.tauri.app) + [SvelteKit](https://kit.svelte.dev).**
 
 A cross-platform desktop app whose SvelteKit renderer connects directly to the

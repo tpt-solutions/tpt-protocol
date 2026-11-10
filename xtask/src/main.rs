@@ -594,7 +594,7 @@ mod fuzz {{
 fn readme(n: &Names) -> String {
     format!(
         "# {crate_name}\n\n\
-         {name} protocol implementation for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.\n\n\
+         {name} protocol implementation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.\n\n\
          **Status: scaffolded.** The parser accepts any non-empty frame and the normalizer\n\
          reports the raw bytes. Replace both with the protocol's framing and fields.\n\n\
          ```bash\n\

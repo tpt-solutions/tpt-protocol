@@ -1,6 +1,6 @@
 # tpt-protocol-core
 
-**Core traits for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) — `FrameParser`, `StateValidator`, `DataNormalizer`, and the shared `Error` type.**
+**Core traits for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) — `FrameParser`, `StateValidator`, `DataNormalizer`, and the shared `Error` type.**
 
 This crate defines the universal traits that every protocol crate in the
 suite implements. They provide a single, consistent interface for frame
@@ -247,7 +247,7 @@ crates/tpt-protocol-core/
 
 ## Related crates
 
-- [`tpt-protocol-tup`](https://github.com/tpt-protocol/tpt-protocol) — the
+- [`tpt-protocol-tup`](https://github.com/tpt-solutions/tpt-protocol) — the
   TPT Unified Protocol envelope (`DataPoint`, `TupValue`, `Quality`,
   `SourceProtocol`) that `DataNormalizer` produces.
 - `tpt-protocol-daemon` — background service that drives every protocol
