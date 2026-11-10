@@ -87,7 +87,8 @@ cargo run --bin tpt-protocol-daemon -- --simulate modbus
 | `q` / `Q` | Quit |
 | `Esc` | Quit |
 | `Ctrl+C` | Quit |
-| `↑` / `↓` | Scroll the data table |
+| `↑` / `↓` | Scroll the data table. Scrolling up pauses auto-follow. |
+| `End` | Jump to the newest row and resume auto-follow |
 
 ## Display
 
@@ -95,8 +96,9 @@ cargo run --bin tpt-protocol-daemon -- --simulate modbus
   ` DISCONNECTED ` status chip.
 - **Stats bar** — `Messages: N | Uptime: HH:MM:SS`.
 - **Data table** — columns `Time`, `Protocol`, `Device`, `Point`, `Value`,
-  `Quality`. `Time` is `HH:MM:SS.mmm` derived from the `DataPoint` timestamp
-  (ms since epoch). `Device`/`Point` are truncated to 18 bytes with a `..`
+  `Quality`. `Time` is the UTC date and time, `YYYY-MM-DD HH:MM:SS.mmmZ`, derived from the
+  `DataPoint` timestamp (ms since epoch). Local time is not shown, because that needs a
+  timezone database. `Device`/`Point` are truncated to 18 bytes with a `..`
   marker when longer. `Quality` is color-coded per the table above.
 - **Status bar** — `[Q]uit [↑↓] Scroll [Esc] Quit` and, if present, a red
   `Error: …` line.

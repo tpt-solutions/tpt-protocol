@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `svelte-check` and `prepare` scripts, with a locked `package-lock.json`. The CI `ui-web` job
+  runs them.
+
+### Changed
+- A standalone workspace root, outside the main workspace, so its Tauri tree does not affect
+  the core build, CI or `cargo-deny`.
+- The CSP allows loopback on any port, not a hard-coded 9080.
+- The production devtools permission is removed from the capability.
+- Requires Rust 1.90 (`rust-version`). The library workspace stays at 1.85.
+- Marked `publish = false`.
+
+### Fixed
+- The Vite config imports from `@sveltejs/kit/vite`, and `src/app.html` is present, so the web
+  build runs. It never built before.
+- One reconnect timer, cleared on teardown.
+- Lagged notices are shown as a message, not as a table row.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Tests for data-point parsing on a JSON array and on a single object, and for malformed
+  JSON, which is reported as an error rather than a panic.
+
+### Changed
+- The event loop runs in `run_ui`, so the terminal is restored on every exit path, including
+  a failed loop.
+- Only key presses are handled. Windows also reports release and repeat events.
+- Timestamps show the UTC date and time with a `Z`. Local time is not shown.
+- Auto-follow tracks the newest rows. Scrolling up pauses it, and `End` resumes it.
+- The data buffer is a bounded `VecDeque`, and the socket channel is bounded at 256 messages,
+  so a slow UI applies backpressure.
+- Pings are answered on the write half. The read-only loop never answered them before.
+- `tokio-tungstenite` drops the unused `native-tls` feature. The client connects only to
+  `ws://` on the local daemon.
+- Marked `publish = false`. The CLI depends on the daemon's wire format through path-only
+  crates.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

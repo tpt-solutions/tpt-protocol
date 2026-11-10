@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- A status line that shows the daemon connection.
+- Pings from the daemon are answered with pongs.
+
+### Changed
+- A standalone workspace root with its own dependency pins. It is outside the main workspace,
+  so its Slint tree does not affect the core build, CI or `cargo-deny`.
+- Requires Rust 1.90 (`rust-version`). The library workspace stays at 1.85.
+- The data channel is bounded.
+- `Slint` spawn errors are returned instead of unwrapped.
+- Marked `publish = false`.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

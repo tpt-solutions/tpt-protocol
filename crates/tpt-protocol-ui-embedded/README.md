@@ -16,6 +16,8 @@ TUI and the [`tpt-protocol-ui-web`](../tpt-protocol-ui-web) Tauri app.
 - Connects to the daemon WebSocket (`tokio-tungstenite`), auto-reconnects every
   3 seconds, and decodes TUP JSON with `tpt_protocol_tup::json::from_json_str`.
 - Live `ListView` of the last 200 points (oldest dropped as new arrive).
+- A status line shows the daemon connection. Pings from the daemon are answered, and the
+  data channel is bounded, so a slow UI does not grow memory without limit.
 - High-contrast dark theme (`#101418` background, `#e6edf3` text) suited to
   shop-floor / kiosk displays.
 - Single `--url` flag (clap derive) for the daemon WebSocket endpoint.

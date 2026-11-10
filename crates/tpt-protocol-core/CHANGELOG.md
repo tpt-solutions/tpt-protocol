@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `FrameEncoder`, the inverse of `FrameParser`: wire bytes from a frame. Implemented by
+  every protocol crate that has an encoder.
+- `DataNormalizer::normalize_all`, which returns every point a frame carries. It defaults
+  to the single point from `normalize`. Sparkplug B, Matter, NMEA and SDC override it.
+- `normalize_batch` concatenates `normalize_all` for each frame, so batches fan out.
+
+### Changed
+- `default-features = []`. The crate builds `#![no_std]` by default, so the
+  `thumbv6m-none-eabi` build no longer pulls `std` into protocol crates.
+- `Error::Checksum` carries `u32` values, so it can hold a 16-bit CRC. It is used for CRC
+  and checksum mismatches, so callers can match the variant.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

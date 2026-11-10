@@ -122,8 +122,10 @@ tpt-protocol-ui-web/
 - Consumes TUP `DataPoint`s exactly as produced by the protocol crates / daemon.
 - Renderer-side connection with 3 s auto-reconnect; caps the in-memory list at
   500 points.
-- CSP restricts connect-src to loopback (`ws://127.0.0.1:9080`,
+- CSP restricts connect-src to loopback on any port (for example `ws://127.0.0.1:9080`,
   `http://localhost:1420`) — local-first by default.
+- The production devtools permission is removed from the capability. The web build runs
+  under `vite build`, and CI runs `svelte-check`.
 
 ## Related crates
 

@@ -6,14 +6,15 @@ The daemon is a `std` binary crate that drives every protocol crate in the
 workspace through a common plugin interface and streams normalized TUP data
 to local clients over WebSocket. It can read real bytes over **TCP** (client
 or listener), **UDP**, **serial** (with the `serial` cargo feature), and
-**SocketCAN** (Linux only, with the `socketcan` cargo feature).
+**SocketCAN** (Linux only, with the `socketcan` cargo feature), from **stdin**, or by
+polling a **Modbus TCP** server (`--modbus-poll`).
 
 ## Status / Conformance
 
 - **Version:** `0.1.0` (initial release).
-- **Transports:** TCP (connect or listen) and UDP read real bytes. Each
-  protocol's `try_parse` frames them and its normalizer produces TUP data
-  points. Without a transport flag the daemon runs the simulation. Serial and
+- **Transports:** TCP (connect or listen), UDP, stdin and the Modbus TCP poller
+  read real bytes. Each protocol's `try_parse` frames them and its normalizer
+  produces TUP data points. Without a transport flag the daemon runs the simulation. Serial and
   SocketCAN are implemented behind cargo features. Serial was tested against a
   socat pseudo-terminal pair, and SocketCAN against a `vcan0` virtual interface.
   Neither has been tested on real hardware.
@@ -398,10 +399,9 @@ stream and print each data point. The daemon's default simulate target is
   Parquet output was read back with pyarrow (types, nulls and values).
 - **Sinks**: MQTT, InfluxDB, OpenTelemetry, Prometheus remote-write and an OPC UA server are
   available (see above).
-- **No authentication.** The WebSocket API is unauthenticated and loopback by
-  default; do not expose it on an untrusted network.
-- **MAVLink `CRC_EXTRA`** validation gap lives in the `tpt-protocol-mavlink`
-  crate (a correctness gap, not memory-safety), not the daemon itself.
+- **Authentication is optional.** The WebSocket API is loopback by default. `--token`
+  requires a token on each connection (`?token=` or `Authorization: Bearer`), but there is no
+  TLS. Do not expose the API on an untrusted network without a secured proxy.
 
 ## Crate layout
 
@@ -421,11 +421,19 @@ crates/tpt-protocol-daemon/
 │   ├── sink.rs                # MQTT sink (--mqtt, feature mqtt)
 │   ├── anomaly.rs             # [[anomaly]] stream checks
 │   ├── pcap.rs                # pcap and pcapng reader (--replay-format pcap)
+│   ├── pcap_modbus.rs         # Modbus pcap replay: pairs requests with responses
+│   ├── influx.rs              # InfluxDB line-protocol writer (--influx)
+│   ├── otel.rs                # OpenTelemetry OTLP/HTTP JSON metrics (--otel)
+│   ├── prometheus.rs          # Prometheus remote-write (--prometheus-remote-write)
+│   ├── http_out.rs            # plain-HTTP POST used by the InfluxDB and OTel sinks
+│   ├── opcua_server.rs        # OPC UA server (--opcua-listen)
+│   ├── parquet_record.rs      # Parquet recorder (--record-parquet, feature parquet-record)
 │   ├── plugins/
 │   │   └── mod.rs             # ProtocolPlugin impls, one feature per protocol
 │   └── transport/
 │       ├── mod.rs             # Transport and ByteLink traits, framer, supervisor
 │       ├── net.rs             # TCP connect/listen and UDP
+│       ├── poll.rs            # --modbus-poll: polls a Modbus TCP server
 │       ├── serial.rs          # serial ports (feature `serial`)
 │       ├── can.rs             # SocketCAN (feature `socketcan`, Linux)
 │       └── stdin.rs           # --stdin

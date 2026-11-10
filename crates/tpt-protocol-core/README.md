@@ -11,9 +11,9 @@ daemon, the CLI, and the UI tools through one code path.
 ## Status / Conformance
 
 - **Version:** `0.1.0` (initial release).
-- **Memory safety:** `#![no_std]` with no `alloc` required by the core
-  traits; the only heap allocation is the `Vec` returned by
-  `DataNormalizer::normalize_batch`, gated behind `alloc`.
+- **Memory safety:** `#![no_std]`. The only heap allocations are the `Vec`s returned by
+  `DataNormalizer::normalize_all`, `normalize_batch` and `FrameEncoder::encode`, which use
+  `alloc`.
 - **Conformance:** implements the three core traits specified in
   **spec §7** of the project specification. The `ProtocolPlugin` trait (used
   by the daemon's plugin architecture) is provided behind the `std` feature.
@@ -87,8 +87,27 @@ pub trait DataNormalizer {
 
 - `normalize` is required — it maps a `Frame` into a TUP `DataPoint`
   (`tpt-protocol-tup`).
-- `normalize_batch` has a default implementation that calls `normalize` per
-  frame and collects the results into a `Vec`.
+- `normalize_all` returns every point a frame carries. Its default implementation
+  returns the single point from `normalize`. Protocols whose frames carry several
+  values override it: Sparkplug B (one per metric), Matter (one per attribute), NMEA
+  (one per decoded field) and IEEE 11073 SDC (one per numeric observation).
+- `normalize_batch` concatenates `normalize_all` for each frame, so a batch fans out.
+  A frame with several values contributes all of them.
+
+### `FrameEncoder`
+
+The inverse of `FrameParser`: it writes a frame as wire bytes.
+
+```rust
+pub trait FrameEncoder {
+    type Frame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<alloc::vec::Vec<u8>, Error>;
+}
+```
+
+Most protocol crates implement it, and their tests check that `parse(encode(frame))`
+gives the frame back. Not every crate does: BACnet, Matter and MAVLink do not yet.
 
 ### `ProtocolPlugin` (behind the `std` feature)
 
@@ -126,7 +145,7 @@ pub enum Error {
     Cbor(String),
     Transport(String),
     Config(String),
-    Checksum { expected: u8, actual: u8, message: String },
+    Checksum { expected: u32, actual: u32, message: String },
     Overflow  { max: usize, actual: usize, message: String },
     InvalidFrame { reason: String, offset: usize },
 }
@@ -154,10 +173,10 @@ protocol crates use to report exactly where and why a frame was rejected.
 
 ## `no_std` story
 
-The crate is `#![no_std]` by default and requires only `alloc` (no full
-`std`). The three parser/normalizer/validator traits and the `Error` type
-are all available in a bare-metal/`no_std` context. The `std` feature
-(default-on) additionally enables `tpt-protocol-tup/std` and `futures-util`,
+The crate is `#![no_std]`, and its default features are empty. It requires only `alloc`
+(no full `std`). The parser, validator, normalizer and encoder traits and the `Error` type
+are all available in a bare-metal/`no_std` context. The `std` feature (off by default)
+additionally enables `tpt-protocol-tup/std` and `futures-util`,
 which brings in the `ProtocolPlugin` trait for the daemon's async streaming
 model. To use the crate without `std`:
 

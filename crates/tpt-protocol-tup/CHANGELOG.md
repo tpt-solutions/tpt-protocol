@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `cddl_conformance` tests, which check encoder output against the CDDL rules and check
+  that the protocol and quality lists match the Rust enums. The checker is hand-written,
+  not a general CDDL validator.
+- The JSON mirror tags bytes and non-finite floats as objects, so they round-trip.
+
+### Changed
+- CBOR matches `schema/tup-v1.cddl`: integer keys and `[tag, value]` values.
+- Non-canonical CBOR is rejected: indefinite-length maps and arrays, extra array elements,
+  duplicate keys, and `schema_version` 0.
+- The JSON mirror rejects invalid hex, unsupported `schema_version` values and integers
+  above `u64`.
+- `Quality` and `SourceProtocol` are `#[non_exhaustive]`.
+- `serde` is optional and enabled by `std`. CBOR is gated behind `alloc`, since it encodes
+  into a `Vec`. Default features are empty.
+- `hex` is optional, behind `std`.
+
+### Fixed
+- Schema tests run on `jsonschema` 0.61 without its `http` feature, which pulled in
+  `reqwest` and `h2` (RUSTSEC-2026-0258). The schema is self-contained.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added

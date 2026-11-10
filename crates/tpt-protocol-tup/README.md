@@ -22,10 +22,10 @@ isomorphic and validated against `schema/tup-v1.schema.json` in tests.
 | Feature | Default | Description |
 | ------- | ------- | ----------- |
 | `std`   | no      | Enables the JSON module (`serde_json`, `hex`) and `minicbor/std`. |
-| `alloc` | no      | Enables `minicbor/alloc`. The crate always uses `alloc` (`Vec`, `String`), so an allocator is required. |
+| `alloc` | no      | Enables the CBOR encoder and decoder (they encode into a `Vec`) and `minicbor/alloc`. |
 
-- `#![no_std]` with no default features. It always requires `alloc` (a
-  `Vec`/`String`/`format!` heap), so it is not a no-alloc crate.
+- `#![no_std]` with default features empty. The CBOR encoder needs `alloc`. The JSON
+  module needs `std`.
 - Const `schema_version()` (currently `1`) on every `DataPoint` for forward
   compatibility; decoders reject a frame whose `schema_version` exceeds the
   compiled maximum.
