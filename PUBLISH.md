@@ -3,7 +3,7 @@
 Tracks the release of the **21 published crates** to crates.io, in dependency order.
 Source of truth for scope: `TODO.md` (Phase 4). Update the checkboxes as each step completes.
 
-**Status:** Not started. `cargo publish` is irreversible. TODO.md requires an explicit go-ahead before the first real publish.
+**Status:** Published 2026-11-11 (all 21 crates live at 0.1.0). `cargo publish` is irreversible. TODO.md requires an explicit go-ahead before the first real publish.
 
 ---
 
@@ -23,30 +23,30 @@ Not published (`publish = false`): `tpt-protocol-daemon`, `tpt-protocol-cli`, `t
 
 ## Pre-flight (do once, before Tier 0)
 
-- [ ] Working tree committed. Uncommitted README/CHANGELOG edits exist as of the 2026-11-11 snapshot. Commit them first, so `cargo publish` does not need `--allow-dirty`.
-- [ ] `cargo fmt --check` passes
-- [ ] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
-- [ ] `cargo test --workspace` passes
-- [ ] `cargo build --workspace --target thumbv6m-none-eabi` passes (no_std gate)
-- [ ] `cargo package --list -p <crate>` runs cleanly for all 21 crates (needs no registry)
-- [ ] Every crate's `CHANGELOG.md` has a `0.1.0` entry dated on the release day
-- [ ] Logged in: `cargo login` with a crates.io token that has publish scope
-- [ ] Confirm all 21 names are still unclaimed on crates.io (`cargo search tpt-protocol-` or check each page)
-- [ ] Explicit go-ahead from the maintainer recorded here: ____________ (date)
+- [x] Working tree committed. Uncommitted README/CHANGELOG edits exist as of the 2026-11-11 snapshot. Commit them first, so `cargo publish` does not need `--allow-dirty`.
+- [x] `cargo fmt --check` passes
+- [x] `cargo clippy --workspace --all-targets --all-features -- -D warnings` passes
+- [x] `cargo test --workspace` passes
+- [x] `cargo build --workspace --target thumbv6m-none-eabi` passes (no_std gate)
+- [x] `cargo package --list -p <crate>` runs cleanly for all 21 crates (needs no registry)
+- [x] Every crate's `CHANGELOG.md` has a `0.1.0` entry dated on the release day
+- [x] Logged in: `cargo login` with a crates.io token that has publish scope
+- [x] Confirm all 21 names are still unclaimed on crates.io (`cargo search tpt-protocol-` or check each page)
+- [x] Explicit go-ahead from the maintainer recorded here: given in chat 2026-11-11 ("proceed to publish to crates.io")
 
 ---
 
 ## Tier 0: foundation
 
-- [ ] `cargo publish --dry-run -p tpt-protocol-tup`
-- [ ] `cargo publish -p tpt-protocol-tup`
-- [ ] Confirm live at https://crates.io/crates/tpt-protocol-tup (wait for it to show before continuing)
+- [x] `cargo publish --dry-run -p tpt-protocol-tup`
+- [x] `cargo publish -p tpt-protocol-tup`
+- [x] Confirm live at https://crates.io/crates/tpt-protocol-tup (wait for it to show before continuing)
 
 ## Tier 1: core
 
-- [ ] `cargo publish --dry-run -p tpt-protocol-core` (needs `tup` live, so run after Tier 0)
-- [ ] `cargo publish -p tpt-protocol-core`
-- [ ] Confirm live at https://crates.io/crates/tpt-protocol-core
+- [x] `cargo publish --dry-run -p tpt-protocol-core` (needs `tup` live, so run after Tier 0)
+- [x] `cargo publish -p tpt-protocol-core`
+- [x] Confirm live at https://crates.io/crates/tpt-protocol-core
 
 ## Tier 2: protocol crates
 
@@ -54,25 +54,25 @@ Dry-run each crate only after its dependencies are live. Publish in any order. T
 
 | # | Crate | Internal deps | Dry-run | Publish | Live on crates.io |
 |---|-------|---------------|---------|---------|-------------------|
-| 1 | `tpt-protocol-modbus` | core, tup | [ ] | [ ] | [ ] |
-| 2 | `tpt-protocol-j1939` | core, tup | [ ] | [ ] | [ ] |
-| 3 | `tpt-protocol-isobus` | core, tup | [ ] | [ ] | [ ] |
-| 4 | `tpt-protocol-uds` | core, tup | [ ] | [ ] | [ ] |
-| 5 | `tpt-protocol-canopen` | core, tup | [ ] | [ ] | [ ] |
-| 6 | `tpt-protocol-doip-someip` | core, tup | [ ] | [ ] | [ ] |
-| 7 | `tpt-protocol-nmea` | core, tup | [ ] | [ ] | [ ] |
-| 8 | `tpt-protocol-mavlink` | core, tup | [ ] | [ ] | [ ] |
-| 9 | `tpt-protocol-bacnet` | core, tup | [ ] | [ ] | [ ] |
-| 10 | `tpt-protocol-opcua` | core, tup | [ ] | [ ] | [ ] |
-| 11 | `tpt-protocol-dnp3` | core, tup | [ ] | [ ] | [ ] |
-| 12 | `tpt-protocol-ethercat` | core, tup | [ ] | [ ] | [ ] |
-| 13 | `tpt-protocol-sparkplugb` | core, tup | [ ] | [ ] | [ ] |
-| 14 | `tpt-protocol-ocpp` | core, tup | [ ] | [ ] | [ ] |
-| 15 | `tpt-protocol-ieee11073-sdc` | core, tup | [ ] | [ ] | [ ] |
-| 16 | `tpt-protocol-hl7v2` | core, tup | [ ] | [ ] | [ ] |
-| 17 | `tpt-protocol-knx` | core, tup | [ ] | [ ] | [ ] |
-| 18 | `tpt-protocol-matter-thread` | core, tup | [ ] | [ ] | [ ] |
-| 19 | `tpt-protocol-coap` | core, tup | [ ] | [ ] | [ ] |
+| 1 | `tpt-protocol-modbus` | core, tup | [x] | [x] | [x] |
+| 2 | `tpt-protocol-j1939` | core, tup | [x] | [x] | [x] |
+| 3 | `tpt-protocol-isobus` | core, tup | [x] | [x] | [x] |
+| 4 | `tpt-protocol-uds` | core, tup | [x] | [x] | [x] |
+| 5 | `tpt-protocol-canopen` | core, tup | [x] | [x] | [x] |
+| 6 | `tpt-protocol-doip-someip` | core, tup | [x] | [x] | [x] |
+| 7 | `tpt-protocol-nmea` | core, tup | [x] | [x] | [x] |
+| 8 | `tpt-protocol-mavlink` | core, tup | [x] | [x] | [x] |
+| 9 | `tpt-protocol-bacnet` | core, tup | [x] | [x] | [x] |
+| 10 | `tpt-protocol-opcua` | core, tup | [x] | [x] | [x] |
+| 11 | `tpt-protocol-dnp3` | core, tup | [x] | [x] | [x] |
+| 12 | `tpt-protocol-ethercat` | core, tup | [x] | [x] | [x] |
+| 13 | `tpt-protocol-sparkplugb` | core, tup | [x] | [x] | [x] |
+| 14 | `tpt-protocol-ocpp` | core, tup | [x] | [x] | [x] |
+| 15 | `tpt-protocol-ieee11073-sdc` | core, tup | [x] | [x] | [x] |
+| 16 | `tpt-protocol-hl7v2` | core, tup | [x] | [x] | [x] |
+| 17 | `tpt-protocol-knx` | core, tup | [x] | [x] | [x] |
+| 18 | `tpt-protocol-matter-thread` | core, tup | [x] | [x] | [x] |
+| 19 | `tpt-protocol-coap` | core, tup | [x] | [x] | [x] |
 
 Commands per row:
 
@@ -91,7 +91,7 @@ cargo publish -p <crate>
 - [ ] Add a `cargo publish --dry-run` CI job now that the registry is live (TODO.md Phase 13)
 - [ ] Tag the release `v0.1.0`. This triggers `release.yml`, which builds the daemon and CLI binaries. Decide whether to tag before or after the crates are published.
 - [ ] Update TODO.md Phase 4 checkboxes and the README "published crates" count if it changed
-- [ ] Record the publish date here: ____________
+- [ ] Record the publish date here: 2026-11-11
 
 ---
 
