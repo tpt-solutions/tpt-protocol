@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// CANopen function code (bits 10-7 of the 11-bit COB-ID).
@@ -109,6 +109,41 @@ impl fmt::Display for CanOpenFrame {
             self.node_id,
             self.payload.len(),
         )
+    }
+}
+
+/// Writes a [`CanOpenFrame`] as the CAN frame body the parser reads: the 11-bit
+/// COB-ID (big-endian) and up to eight data bytes. The function code and node
+/// ID follow from the COB-ID, so only `cob_id` and the payload are written.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CanOpenEncoder;
+
+impl CanOpenEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for CanOpenEncoder {
+    type Frame = CanOpenFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.cob_id > 0x07FF {
+            return Err(Error::Parse(format!(
+                "CANopen COB-ID 0x{:X} is wider than 11 bits",
+                frame.cob_id
+            )));
+        }
+        if frame.payload.len() > 8 {
+            return Err(Error::Parse(format!(
+                "CANopen payload too large: {} bytes, max 8",
+                frame.payload.len()
+            )));
+        }
+        let mut out = Vec::with_capacity(2 + frame.payload.len());
+        out.extend_from_slice(&frame.cob_id.to_be_bytes());
+        out.extend_from_slice(&frame.payload);
+        Ok(out)
     }
 }
 
@@ -466,6 +501,18 @@ mod fuzz {
     }
 
     proptest! {
+        /// The COB-ID's top five bits are not kept, so the comparison is on
+        /// frames: parse, encode, parse again.
+        #[test]
+        fn encoded_frames_parse_back_to_the_same_frame(
+            bytes in proptest::collection::vec(any::<u8>(), 2..11)
+        ) {
+            if let Ok(frame) = CanOpenParser.parse(&bytes) {
+                let encoded = CanOpenEncoder::new().encode(&frame).unwrap();
+                prop_assert_eq!(CanOpenParser.parse(&encoded).unwrap(), frame);
+            }
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = CanOpenParser::new();

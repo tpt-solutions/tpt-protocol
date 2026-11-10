@@ -1,7 +1,7 @@
 # tpt-protocol-canopen
 
 CANopen embedded motion-control protocol parser, validator, and TUP normalizer for
-the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

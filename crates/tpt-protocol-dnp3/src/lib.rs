@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// DNP3 application layer function code.
@@ -115,6 +115,107 @@ fn crc16_dnp(data: &[u8]) -> u16 {
         }
     }
     !crc
+}
+
+/// Writes a [`Dnp3Frame`] as an IEEE 1815 data link frame. The CRCs are
+/// computed: one over the 8 header bytes, and one per 16-byte block of user
+/// data. User data is the transport byte, then the application control and
+/// function code (first fragment only), then the payload.
+///
+/// `length` decides the frame shape: 5 is a link-layer-only frame with no user
+/// data (the parser reports exactly that), and anything else must equal 5 plus
+/// the user data length. `data_link_crc` is ignored, since it is recomputed.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Dnp3Encoder;
+
+impl Dnp3Encoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+fn function_code_value(function: Dnp3FunctionCode) -> u8 {
+    match function {
+        Dnp3FunctionCode::Confirm => 0,
+        Dnp3FunctionCode::Read => 1,
+        Dnp3FunctionCode::Write => 2,
+        Dnp3FunctionCode::Select => 3,
+        Dnp3FunctionCode::Operate => 4,
+        Dnp3FunctionCode::DirectOperate => 5,
+        Dnp3FunctionCode::DirectOperateNoAck => 6,
+        Dnp3FunctionCode::Freeze => 7,
+        Dnp3FunctionCode::FreezeNoAck => 8,
+        Dnp3FunctionCode::FreezeClear => 9,
+        Dnp3FunctionCode::FreezeClearNoAck => 10,
+        Dnp3FunctionCode::Response => 129,
+        Dnp3FunctionCode::UnsolicitedResponse => 130,
+        Dnp3FunctionCode::Unknown(value) => value,
+    }
+}
+
+impl FrameEncoder for Dnp3Encoder {
+    type Frame = Dnp3Frame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.start != 0x0564 {
+            return Err(Error::Parse(format!(
+                "DNP3 start bytes 0x{:04X} cannot be encoded, expected 0x0564",
+                frame.start
+            )));
+        }
+
+        let mut user = Vec::new();
+        if frame.length == 5 {
+            // Link-layer-only frame: no user data, so no transport or application header.
+            if !frame.payload.is_empty()
+                || frame.application_control != 0
+                || frame.app_function != Dnp3FunctionCode::Unknown(0)
+            {
+                return Err(Error::Parse(
+                    "DNP3 length 5 is a link-layer-only frame, but it has application data".into(),
+                ));
+            }
+        } else {
+            let transport = (if frame.transport_final { 0x80 } else { 0 })
+                | (if frame.transport_first { 0x40 } else { 0 })
+                | (frame.transport_seq & 0x3F);
+            user.push(transport);
+            if frame.transport_first {
+                user.push(frame.application_control);
+                user.push(function_code_value(frame.app_function));
+            } else if frame.application_control != 0
+                || frame.app_function != Dnp3FunctionCode::Unknown(0)
+            {
+                return Err(Error::Parse(
+                    "DNP3 continuation fragments carry no application header".into(),
+                ));
+            }
+            user.extend_from_slice(&frame.payload);
+
+            let expected = 5 + user.len();
+            if usize::from(frame.length) != expected || expected > 255 {
+                return Err(Error::Parse(format!(
+                    "DNP3 length {} does not match {} bytes of user data (length must be 5 plus that)",
+                    frame.length,
+                    user.len()
+                )));
+            }
+        }
+
+        let mut out = Vec::with_capacity(10 + user.len() + 2 * user.len().div_ceil(16));
+        out.extend_from_slice(&0x0564u16.to_be_bytes());
+        out.push(frame.length);
+        out.push(frame.control);
+        out.extend_from_slice(&frame.destination.to_le_bytes());
+        out.extend_from_slice(&frame.source.to_le_bytes());
+        let header_crc = crc16_dnp(&out[0..8]);
+        out.extend_from_slice(&header_crc.to_le_bytes());
+        for block in user.chunks(16) {
+            out.extend_from_slice(block);
+            out.extend_from_slice(&crc16_dnp(block).to_le_bytes());
+        }
+        Ok(out)
+    }
 }
 
 /// DNP3 frame parser: IEEE 1815 data link layer, then transport and
@@ -668,6 +769,15 @@ mod fuzz {
     }
 
     proptest! {
+        /// A parsed frame encodes back to the same bytes: the CRCs are
+        /// recomputed and match, and every header field is kept.
+        #[test]
+        fn parsed_frames_encode_back_to_the_same_bytes(bytes in dnp3_frame()) {
+            if let Ok(frame) = Dnp3Parser::new().parse(&bytes) {
+                prop_assert_eq!(Dnp3Encoder::new().encode(&frame).unwrap(), bytes);
+            }
+        }
+
         #[test]
         fn structured_dnp3_never_panics(bytes in mutated_dnp3()) {
             let _ = Dnp3Parser::new().parse(&bytes);

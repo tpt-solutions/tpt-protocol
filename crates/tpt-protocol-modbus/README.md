@@ -1,7 +1,7 @@
 # tpt-protocol-modbus
 
 Modbus RTU and Modbus TCP frame parsing, validation, and TUP normalisation
-for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

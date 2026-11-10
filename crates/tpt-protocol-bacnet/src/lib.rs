@@ -775,4 +775,90 @@ mod fuzz {
             let _ = parser.parse(&bytes);
         }
     }
+
+    /// A BACnet/IP frame with a correct BVLC header and length. The NPDU
+    /// control bits select the DNET, SNET, hop-count and network-message
+    /// fields, and the APDU is random. Forwarded-NPDU frames get their
+    /// 6-byte original address.
+    fn bacnet_frame() -> impl Strategy<Value = Vec<u8>> {
+        const FUNCTIONS: [u8; 3] = [0x0A, 0x0B, 0x04];
+        const CONTROLS: [u8; 7] = [0x00, 0x04, 0x08, 0x20, 0x28, 0x80, 0xA0];
+        (
+            0usize..FUNCTIONS.len(),
+            any::<u8>(),
+            0usize..CONTROLS.len(),
+            any::<u8>(),
+            proptest::collection::vec(any::<u8>(), 0..8),
+            proptest::collection::vec(any::<u8>(), 0..32),
+        )
+            .prop_map(|(fi, raw_func, ci, raw_control, dest_addr, apdu)| {
+                // Mostly the defined codes, sometimes any byte.
+                let func = if raw_func < 0x80 {
+                    FUNCTIONS[fi]
+                } else {
+                    raw_func
+                };
+                let control = if raw_control < 0x80 {
+                    CONTROLS[ci]
+                } else {
+                    raw_control
+                };
+                let mut body = alloc::vec![0x01, control];
+                if control & 0x20 != 0 {
+                    body.extend_from_slice(&[0x00, 0x01, dest_addr.len() as u8]);
+                    body.extend_from_slice(&dest_addr);
+                }
+                if control & 0x08 != 0 {
+                    body.extend_from_slice(&[0x00, 0x02, 0x01, 0x55]);
+                }
+                if control & 0x20 != 0 {
+                    body.push(0xFF);
+                }
+                if control & 0x80 != 0 {
+                    body.push(0x01);
+                }
+                body.extend_from_slice(&apdu);
+
+                let mut out = alloc::vec![0x81, func, 0, 0];
+                if func == 0x04 {
+                    out.extend_from_slice(&[192, 168, 1, 10, 0xBA, 0xC0]);
+                }
+                out.extend_from_slice(&body);
+                let len = out.len() as u16;
+                out[2..4].copy_from_slice(&len.to_be_bytes());
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_bacnet() -> impl Strategy<Value = Vec<u8>> {
+        (bacnet_frame(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_bacnet_never_panics(bytes in mutated_bacnet()) {
+            let _ = BacnetParser::new().parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_bacnet_never_panics_in_the_normalizer(bytes in bacnet_frame()) {
+            if let Ok(frame) = BacnetParser::new().parse(&bytes) {
+                let _ = BacnetNormalizer::new().normalize(&frame);
+            }
+        }
+    }
 }

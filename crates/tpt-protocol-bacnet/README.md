@@ -1,7 +1,7 @@
 # tpt-protocol-bacnet
 
 BACnet building-automation and control-network protocol parser, validator, and TUP
-normalizer for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol)
+normalizer for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol)
 suite.
 
 ## Overview

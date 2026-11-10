@@ -1,7 +1,7 @@
 # tpt-protocol-dnp3
 
 DNP3 electrical-grid SCADA protocol parser, validator, and TUP normalizer for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

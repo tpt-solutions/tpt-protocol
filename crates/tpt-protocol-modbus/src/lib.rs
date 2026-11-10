@@ -1602,3 +1602,17 @@ mod fuzz {
         }
     }
 }
+
+impl ModbusEncoder {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl ModbusTcpEncoder {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
