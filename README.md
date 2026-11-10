@@ -50,7 +50,7 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 | `tpt-protocol-dnp3` | DNP3 | Energy/SCADA | Pattern A (scratch) |
 | `tpt-protocol-ethercat` | EtherCAT | Factory | Published (alt. to `ethercrab`) |
 | `tpt-protocol-sparkplugb` | Sparkplug B | IIoT | Pattern A (scratch) |
-| `tpt-protocol-ocpp` | OCPP 2.0.1 | EV Charging | Pattern A (scratch — `ocpp` crate unmaintained) |
+| `tpt-protocol-ocpp` | OCPP-J (1.6, 2.0.1) | EV Charging | Pattern A (scratch — `ocpp` crate unmaintained) |
 | `tpt-protocol-ieee11073-sdc` | IEEE 11073 SDC | Medical | Pattern A (scratch) |
 | `tpt-protocol-hl7v2` | HL7 v2.x | Healthcare | Pattern A (scratch) |
 | `tpt-protocol-knx` | KNX | Smart Building | Pattern A (scratch) |
@@ -63,8 +63,9 @@ TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes,
 tpt-protocol/
 ├── crates/tpt-protocol-tup/       # TUP schema (CBOR + JSON), no_std
 ├── crates/tpt-protocol-core/      # Core traits (FrameParser, StateValidator, DataNormalizer)
-├── crates/tpt-protocol-<name>/    # 17 published protocol crates (Pattern A — scratch)
+├── crates/tpt-protocol-<name>/    # 19 published protocol crates (Pattern A — scratch, or a wrapper: MAVLink)
 ├── crates/tpt-protocol-daemon/    # Background service
+├── crates/tpt-protocol-bindings/  # C ABI, WebAssembly and Python bindings (not published)
 ├── crates/tpt-protocol-cli/       # TUI (ratatui dashboard)
 ├── crates/tpt-protocol-ui-embedded/ # Native embedded UI (Slint)
 ├── crates/tpt-protocol-ui-web/    # Web fleet dashboard (Tauri v2 + SvelteKit)
@@ -88,7 +89,7 @@ cargo run --bin tpt-protocol-daemon -- --list-protocols
 # Run the daemon with simulated data for any supported protocol
 cargo run --bin tpt-protocol-daemon -- --simulate modbus
 
-# Replay raw bytes from a file through a protocol's parser (hex or raw)
+# Replay a capture through a protocol's parser (hex, raw, candump or pcap)
 cargo run --bin tpt-protocol-daemon -- --simulate bacnet --replay frame.hex
 
 # In another terminal, launch the TUI
@@ -98,15 +99,16 @@ cargo run --bin tpt-protocol-cli
 The daemon has two data sources. By default every protocol produces synthetic
 TUP data points, so the pipeline runs end-to-end without hardware. Pass a
 transport flag to decode real bytes instead: `--tcp-connect`, `--tcp-listen`,
-`--udp-bind`, and (with the `serial` or `socketcan` feature) `--serial` and
-`--can`. Serial and SocketCAN are tested only against a pseudo-terminal pair
-and a `vcan0` interface, not real hardware. See the
-[daemon README](crates/tpt-protocol-daemon/README.md#transports).
+`--udp-bind`, `--stdin`, `--modbus-poll` (a Modbus TCP poller), and (with the `serial` or
+`socketcan` feature) `--serial` and `--can`. Serial and SocketCAN are tested only against a
+pseudo-terminal pair and a `vcan0` interface, not real hardware. The daemon can also send its
+points to MQTT, InfluxDB, OpenTelemetry, Prometheus or an OPC UA server, and record them to
+NDJSON, MCAP or Parquet. See the [daemon README](crates/tpt-protocol-daemon/README.md#transports).
 
 ## Architecture
 
 - **no_std by default**: All protocol crates compile to bare-metal targets (`thumbv6m-none-eabi`).
-- **Local-first**: The daemon binds its API to `127.0.0.1` only. Zero telemetry, zero cloud dependency.
+- **Local-first**: The daemon binds its API to `127.0.0.1` by default, and logs a warning for any other address. Zero telemetry, zero cloud dependency.
 - **TUP envelope**: Every protocol normalizes into the TPT Unified Protocol — CBOR on the wire, JSON for the UI, openly specified in `SPEC-TUP.md`.
 - **Memory-safe**: Written in Rust. `tpt-protocol-telos` formally checks three Modbus specifications (in this repository; not published). Other state machines are not yet covered.
 
