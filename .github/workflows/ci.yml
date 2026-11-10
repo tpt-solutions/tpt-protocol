@@ -215,6 +215,33 @@ jobs:
             cargo package --list -p "tpt-protocol-$p" > /dev/null
           done
 
+  publish-dry-run:
+    # Needs the registry, so it runs now that the 21 crates are live on crates.io.
+    # Each crate is dry-run against the published versions of its dependencies.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dry-run publish of the 21 published crates
+        run: |
+          for p in tup core bacnet canopen coap dnp3 doip-someip ethercat hl7v2 \
+                   ieee11073-sdc isobus j1939 knx matter-thread mavlink modbus nmea \
+                   ocpp opcua sparkplugb uds; do
+            cargo publish --dry-run -p "tpt-protocol-$p"
+          done
+
+  semver-checks:
+    # Compares the public API against the latest crates.io release. Passes while
+    # the code matches 0.1.0; a breaking change then needs a version bump.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - run: cargo semver-checks --workspace
+
   msrv:
     # Pinned to the workspace rust-version. The ui-* apps are not workspace
     # members (they need Rust 1.90 and are built standalone).

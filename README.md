@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/tpt-solutions/tpt-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/tpt-solutions/tpt-protocol/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![crates.io](https://img.shields.io/crates/v/tpt-protocol-tup.svg)](https://crates.io/crates/tpt-protocol-tup)
+[![docs.rs](https://img.shields.io/docsrs/tpt-protocol-tup)](https://docs.rs/tpt-protocol-tup)
 
 **The universal translation layer for the physical world.**
 
