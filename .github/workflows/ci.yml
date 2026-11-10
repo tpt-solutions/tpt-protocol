@@ -155,10 +155,10 @@ jobs:
       - run: maturin build --release --out ../../target/wheels
 
   differential:
-    # Modbus parsing checked against pymodbus, the reference Python library. The
-    # script encodes and decodes random PDUs with pymodbus and compares the Rust
-    # parser's reading of the same bytes. Pinned, so a change of behaviour in
-    # pymodbus shows up as a failure rather than drifting in.
+    # Modbus parsing checked against pymodbus, and NMEA 0183 against pynmea2, the
+    # reference Python libraries. Each script feeds random input to both sides and
+    # compares what they read. Pinned, so a change of behaviour in a reference
+    # library shows up as a failure rather than drifting in.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -167,8 +167,50 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install pymodbus==3.6.9
+      - run: python -m pip install pymodbus==3.6.9 pynmea2==1.19.0 hl7==0.4.5 udsoncan==1.26.1
       - run: python scripts/differential/modbus_pymodbus.py
+      - run: python scripts/differential/nmea_pynmea2.py
+      - run: python scripts/differential/hl7_hl7py.py
+      - run: python scripts/differential/uds_udsoncan.py
+
+  endpoints:
+    # The daemon decodes datagrams that third-party libraries made: pymavlink (MAVLink),
+    # pynmea2 (NMEA 0183) and aiocoap (CoAP), and serves OPC UA to asyncua, a third-party client. Each test sends them over UDP on loopback
+    # and checks every field the daemon records. Pinned, as the differential jobs are.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install pymavlink==2.4.50 pynmea2==1.19.0 aiocoap==0.4.17 asyncua==2.1.0 bacpypes3==0.0.110 cantools==45.1.2
+      - run: cargo build -p tpt-protocol-daemon --features socketcan
+      - run: python scripts/endpoints/run_all.py target/debug/tpt-protocol-daemon
+      # SocketCAN: a virtual CAN interface for the J1939 and CANopen frames made by cantools.
+      - name: Create vcan0 and run the CAN endpoint test
+        run: |
+          sudo modprobe vcan
+          sudo ip link add dev vcan0 type vcan
+          sudo ip link set up vcan0
+          python scripts/endpoints/can_cantools.py target/debug/tpt-protocol-daemon vcan0
+
+  package-list:
+    # Lists the files each published crate would ship, without publishing anything.
+    # `cargo package --list` needs no registry, so it runs for dependent crates too.
+    # A crate that cannot be packaged, or that picks up a stray file, fails here.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: List the package contents of the 21 published crates
+        run: |
+          for p in tup core bacnet canopen coap dnp3 doip-someip ethercat hl7v2 \
+                   ieee11073-sdc isobus j1939 knx matter-thread mavlink modbus nmea \
+                   ocpp opcua sparkplugb uds; do
+            cargo package --list -p "tpt-protocol-$p" > /dev/null
+          done
 
   msrv:
     # Pinned to the workspace rust-version. The ui-* apps are not workspace
