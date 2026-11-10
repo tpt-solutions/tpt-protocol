@@ -1,5 +1,8 @@
 # TPT Protocol
 
+[![CI](https://github.com/tpt-solutions/tpt-protocol/actions/workflows/ci.yml/badge.svg)](https://github.com/tpt-solutions/tpt-protocol/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 **The universal translation layer for the physical world.**
 
 TPT Protocol is an open-source, memory-safe Rust suite that decodes, normalizes, and unifies 19 heavily gatekept industrial, medical, and hardware communication protocols into a single, openly-specified message envelope (TUP).

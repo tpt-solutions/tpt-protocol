@@ -23,8 +23,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - BACnet ReadProperty answers decode their value (REAL, unsigned, signed, enumerated, boolean and other application types).
 - HL7 v2: one point per OBX observation, with numeric results as floats, units, and quality from the result status.
 - Dependency versions shared by several crates are declared once in `[workspace.dependencies]`.
+- `FrameEncoder` implementations (wire bytes from a frame) for UDS, NMEA, CoAP, ISOBUS, J1939, DoIP/SOME-IP, KNX, EtherCAT, OPC UA, OCPP-J, DNP3, CANopen, Sparkplug B, HL7 v2 and IEEE 11073 SDC, each with round-trip tests against its parser. BACnet, Matter and MAVLink have none yet.
+- Structured property tests (valid frames, then mutation) for BACnet, CoAP, DoIP/SOME-IP, EtherCAT, IEEE 11073 SDC, ISOBUS, KNX, Matter, OPC UA, Sparkplug B and UDS, so every protocol crate has them.
+- README badges for CI and license.
+- Daemon: `--influx URL` writes each point as InfluxDB line protocol, in batches, over plain HTTP. No new dependency. Tested against a local HTTP server, not a real InfluxDB.
+- Daemon: `--opcua-listen ADDR` serves the points over OPC UA (anonymous, `SecurityPolicy#None`, read-only: Browse and Read, with the session and secure-channel services). Tested with asyncua 2.1.0 as the client.
+- Daemon: `--prometheus-remote-write URL` sends numeric points as Prometheus remote-write (protobuf, snappy literal form). The body was checked with python-snappy and an independent protobuf reader.
+- Daemon: `--otel URL` sends numeric points to an OpenTelemetry collector as OTLP/HTTP JSON metrics. Tested against a local HTTP server, not a real collector.
+- Daemon: `--record-parquet FILE` (feature `parquet-record`) writes one row per point. The footer is written only on a clean exit. Read back with pyarrow.
+- Daemon: Modbus pcap replay pairs each response with its request by transaction id (`--replay-format pcap --simulate modbus --pcap-port PORT`). Replaying both directions as one stream misread responses; it is fixed for Modbus only. A real loopback capture from pymodbus is a test fixture.
+- Differential tests against reference libraries, run in CI: NMEA 0183 (pynmea2), HL7 v2 (hl7) and UDS (udsoncan), alongside Modbus (pymodbus). Each pins its library version and was checked to catch a deliberately wrong expectation.
+- Endpoint tests (`scripts/endpoints/`, CI job `endpoints`): pymavlink, pynmea2 and aiocoap encode frames, the daemon decodes them from UDP datagrams, and every recorded field is checked. Modbus has its own pcap test on a real capture.
+- Daemon: Modbus, MAVLink and NMEA per-field tests with third-party frames.
+- CI `package-list` job: `cargo package --list` for the 21 published crates (no publishing).
+- NMEA 2000 (`tpt-protocol-nmea`, module `nmea2000`): a CAN frame parser and encoder, a fast-packet reassembler, and decoders for 129025, 127250, 130306, 128267 and 129029. Field layouts are from the published definitions and are not yet checked against a bus capture.
 
 ### Changed
+- ISOBUS: the normalizer decodes the same EEC1, ET1, CCVS and fuel-economy signals as J1939, and gives other PGNs their payload as bytes. It had the same generic first-four-bytes value as J1939 had.
+- J1939: the normalizer decodes the signals of EEC1 (engine speed, SPN 190), ET1 (coolant temperature), CCVS (wheel speed) and fuel economy (fuel rate) in their units. It used to report the first four payload bytes as a number for every PGN. Point names are now `pgn:EEC1.engine_speed` and similar, and other PGNs give their payload as bytes.
+- MAVLink: heartbeat, system status, attitude and GPS messages give one point per field with its unit (`normalize_all`). `normalize` still returns the first point. GPS latitude and longitude are now degrees (float), and altitude is metres, where they were raw 1e-7 and millimetre integers.
+- Daemon: an empty read buffer is no longer sent to the protocol's parser, so a datagram that ends at a frame boundary no longer logs a spurious "frame empty" warning.
 - Normalizers return an error for a frame that carries no measurement, instead of a placeholder value. Affected: DNP3 (a bare request), DoIP/SOME-IP (a header-only message), ISOBUS, J1939, KNX (an empty telegram), NMEA (a sentence with no decodable field), Sparkplug B (a payload with no metric and no sequence number). A length or a zero was being reported as a reading.
 - DNP3 and DoIP report their payload as bytes instead of its length.
 - The daemon's simulation feeds a separate source channel, and the mapping stage forwards to the clients, so the WebSocket API and recordings see mapped points.
