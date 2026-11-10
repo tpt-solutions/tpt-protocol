@@ -48,6 +48,7 @@ tokio-tungstenite = { workspace = true }
 tokio-serial = { version = "5", optional = true }
 rumqttc = { version = "0.25", default-features = false, optional = true }
 mcap = { version = "0.26", optional = true, default-features = false }
+parquet = { version = "59", optional = true, default-features = false }
 futures-util = "0.3"
 anyhow = { workspace = true }
 toml = { workspace = true }
@@ -94,3 +95,5 @@ socketcan = ["dep:socketcan"]
 mqtt = ["dep:rumqttc"]
 # MCAP recording (--record-mcap). Off by default; the file opens in Foxglove and the mcap CLI.
 mcap-record = ["dep:mcap"]
+# Parquet recording (--record-parquet). Off by default; read with pyarrow, DuckDB or parquet-tools.
+parquet-record = ["dep:parquet"]

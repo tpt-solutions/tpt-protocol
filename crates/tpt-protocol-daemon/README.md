@@ -1,6 +1,6 @@
 # tpt-protocol-daemon
 
-Background service for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) — simulated protocol plugins and a local WebSocket API.
+Background service for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) — simulated protocol plugins and a local WebSocket API.
 
 The daemon is a `std` binary crate that drives every protocol crate in the
 workspace through a common plugin interface and streams normalized TUP data
@@ -238,8 +238,44 @@ is behind the `mqtt` feature (`cargo build --features mqtt`):
   log, so the devices are not held up. Plain TCP only (no TLS, no auth yet).
 
 Tested against a real Mosquitto 2.1.2 broker (the `mqtt` CI job, and an end-to-end
-run: pymodbus server, `--modbus-poll`, `--mqtt`, `mosquitto_sub`). Not done: InfluxDB,
-Prometheus remote-write, OpenTelemetry, and an OPC UA server.
+run: pymodbus server, `--modbus-poll`, `--mqtt`, `mosquitto_sub`).
+
+- `--influx http://HOST:PORT/write?db=tpt`: writes each point as one InfluxDB line
+  (measurement = protocol, tags `device`, `point`, `quality` and `unit` if set,
+  field `value`, timestamp in milliseconds with `precision=ms`). Lines are posted in
+  batches of up to 500, flushed every second. Plain HTTP only, with no dependency
+  beyond Tokio. A batch the server refuses, or cannot take within five seconds, is
+  logged and dropped (no retry queue). Tested against a local HTTP server, not a
+  real InfluxDB.
+
+- `--otel http://HOST:PORT/v1/metrics`: sends numeric points to an OpenTelemetry
+  collector as OTLP/HTTP JSON metrics, one gauge per protocol (`tpt.<protocol>`),
+  with `device`, `point`, `quality` and `unit` attributes. Integers are sent as
+  `asInt` (a string in OTLP/JSON), floats and booleans as `asDouble`; text and bytes
+  are skipped. Same batching and plain-HTTP limits as `--influx`. Tested against a
+  local HTTP server, not a real collector.
+
+- `--prometheus-remote-write http://HOST:PORT/api/v1/write`: sends numeric points to a
+  Prometheus remote-write receiver (remote-write 0.1.0). One series `tpt_value` per point,
+  with the labels `device`, `point`, `protocol`, `quality` and `unit` (when set), sorted as
+  the protocol requires. The body is protobuf compressed with snappy. This writer uses
+  snappy's literal-only form, which every decoder reads, so the body is slightly larger
+  than the data. Integers are sent as doubles, so values above 2^53 lose precision. The
+  request body was decoded with python-snappy and an independent protobuf reader.
+
+Both HTTP sinks share one small HTTP/1.1 client (`src/http_out.rs`), which opens a
+connection per batch and has no TLS, retry or proxy support.
+
+- `--opcua-listen 127.0.0.1:4840`: an OPC UA server (OPC UA Binary over `opc.tcp://`),
+  read-only and anonymous, with `SecurityPolicy#None`. It serves GetEndpoints,
+  CreateSession, ActivateSession, CloseSession, Browse and Read. The address space has a
+  `TPT` folder under Objects, and one variable per point, named `<device>/<point>` with the
+  node id `ns=1;s=<device>/<point>`, holding the point's latest value, time and status.
+  Not supported: encryption, certificates, user authentication, subscriptions, history,
+  methods and writes, and the engineering unit. It warns when bound to a non-loopback address.
+  Tested with asyncua 2.1.0 as the client (`scripts/endpoints/opcua_asyncua.py`). The
+  message layout was checked against asyncua's own server, recorded with
+  `scripts/opcua-reference-capture.sh`.
 
 ### Simulation
 
@@ -292,6 +328,27 @@ Unknown keys are rejected. CLI flags override config-file values
 (`--simulate`, `--port`, `--bind`); the config file supplies defaults when
 flags are absent.
 
+## Testing against third-party senders
+
+`scripts/endpoints/` runs the daemon and sends it frames that reference libraries made:
+pymavlink (MAVLink), pynmea2 (NMEA 0183), aiocoap (CoAP) and bacpypes3 (BACnet), over UDP.
+asyncua (OPC UA) connects to the daemon's OPC UA server and reads the points. cantools
+(J1939 and CANopen) sends frames on a SocketCAN interface (`scripts/endpoints/can_cantools.py`,
+Linux only).
+Each script compares every field the daemon records with the value that was encoded:
+
+```sh
+cargo build -p tpt-protocol-daemon
+pip install pymavlink==2.4.50 pynmea2==1.19.0 aiocoap==0.4.17
+python scripts/endpoints/run_all.py target/debug/tpt-protocol-daemon
+# Linux, with a virtual CAN interface (as root: ip link add dev vcan0 type vcan; ip link set up vcan0):
+pip install cantools==45.1.2 && python scripts/endpoints/can_cantools.py target/debug/tpt-protocol-daemon vcan0
+```
+
+The Modbus pcap replay is tested on a real capture, `samples/captures/modbus-loopback.pcap`,
+made by `scripts/capture-modbus-loopback.sh`. The differential tests in
+`scripts/differential/` compare the parsers with pymodbus, pynmea2, hl7 and udsoncan.
+
 ## Running it (clients)
 
 Start the daemon (it prints `WebSocket server listening on ws://127.0.0.1:9080`),
@@ -324,10 +381,23 @@ stream and print each data point. The daemon's default simulate target is
   captures. `--replay-format pcap` reads classic pcap and pcapng, over Ethernet or
   raw IP, IPv4 only. It does not reassemble TCP (segments are taken in capture
   order, with no gap filling), does not reorder, and skips fragments and IPv6.
-  Tested with synthetic captures; no capture from a real network has been replayed.
-  Parquet export is not done. MCAP export is (see `--record-mcap`).
-- **Sinks are limited to the WebSocket and NDJSON files.** There is no MQTT,
-  OPC UA server, InfluxDB or OpenTelemetry output.
+  Tested with synthetic captures, and with one real capture: a pymodbus 3.6.9 client
+  and server on loopback, recorded with tcpdump (`samples/captures/modbus-loopback.pcap`,
+  made by `scripts/capture-modbus-loopback.sh`). No capture from a physical network has
+  been replayed.
+- **Modbus pcap replay pairs requests with responses.** `--replay-format pcap` with
+  `--simulate modbus` needs `--pcap-port` (the server's port). Each TCP conversation is
+  replayed in two streams, requests and responses, and each response is matched to its
+  request by transaction id, so the points carry the addresses. Replaying both directions
+  as one stream, which the other protocols still do, misreads Modbus responses as
+  requests. Only read responses produce points; exceptions and unpaired responses do not.
+  Exports: NDJSON (`--record`), MCAP (`--record-mcap`, feature `mcap-record`) and
+  Parquet (`--record-parquet`, feature `parquet-record`). Parquet writes one row per
+  point, in row groups of 4096, and its footer is written only when the daemon exits
+  cleanly; a daemon stopped with Ctrl-C leaves a file that readers reject. The
+  Parquet output was read back with pyarrow (types, nulls and values).
+- **Sinks**: MQTT, InfluxDB, OpenTelemetry, Prometheus remote-write and an OPC UA server are
+  available (see above).
 - **No authentication.** The WebSocket API is unauthenticated and loopback by
   default; do not expose it on an untrusted network.
 - **MAVLink `CRC_EXTRA`** validation gap lives in the `tpt-protocol-mavlink`
@@ -367,7 +437,7 @@ crates/tpt-protocol-daemon/
 
 ## Related crates
 
-- [`tpt-protocol-core`](https://github.com/tpt-protocol/tpt-protocol) — defines
+- [`tpt-protocol-core`](https://github.com/tpt-solutions/tpt-protocol) — defines
   the `ProtocolPlugin`, `FrameParser`, `StateValidator`, `DataNormalizer`
   traits and the `Error` type the daemon relies on.
 - `tpt-protocol-tup` — the TUP envelope (`DataPoint`, `TupValue`, `Quality`,

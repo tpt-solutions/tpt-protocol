@@ -20,6 +20,7 @@ mod serial;
 mod stdin;
 
 pub use can::can_message;
+pub(crate) use poll::register_points;
 #[cfg(feature = "modbus")]
 pub use poll::PollSpec;
 
@@ -188,6 +189,11 @@ impl<R: AsyncRead + Unpin + Send + 'static> ByteLink for ReaderLink<R> {
 pub fn drain(protocol: &str, buf: &mut Vec<u8>, out: &mut Vec<DataPoint>) -> Result<usize, String> {
     let mut skipped = 0;
     loop {
+        // An empty buffer holds no message yet. It is not a parse error, so it
+        // must not reach the protocol's parser, which may report one.
+        if buf.is_empty() {
+            return Ok(skipped);
+        }
         match plugins::decode_one(protocol, buf)? {
             None => return Ok(skipped),
             Some((points, used)) => {
@@ -349,6 +355,20 @@ mod tests {
         let mut buf = [read.to_vec(), WRITE_REGISTER.to_vec()].concat();
         let mut out = Vec::new();
         assert_eq!(drain("modbus", &mut buf, &mut out), Ok(1));
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_buffer_is_not_a_parse_error() {
+        // A datagram that ends exactly at a frame boundary leaves nothing to parse.
+        // The MAVLink parser reports an empty input as an error, which must not reach
+        // the log as one.
+        let mut out = Vec::new();
+        let mut empty = Vec::new();
+        assert_eq!(drain("mavlink", &mut empty, &mut out), Ok(0));
+        let mut one = WRITE_REGISTER.to_vec();
+        assert_eq!(drain("modbus", &mut one, &mut out), Ok(0));
+        assert!(one.is_empty());
         assert_eq!(out.len(), 1);
     }
 

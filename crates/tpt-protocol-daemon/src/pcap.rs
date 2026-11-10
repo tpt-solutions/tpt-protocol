@@ -20,6 +20,27 @@ const PCAPNG_BYTE_ORDER: u32 = 0x1A2B_3C4D;
 /// given, keeps only segments whose source or destination port matches. Packets
 /// without a payload are dropped.
 pub fn payloads(bytes: &[u8], port: Option<u16>) -> Result<Vec<Vec<u8>>, String> {
+    Ok(segments(bytes)?
+        .into_iter()
+        .filter(|s| port.is_none_or(|p| s.src_port == p || s.dst_port == p))
+        .map(|s| s.payload)
+        .collect())
+}
+
+/// One TCP or UDP segment with its addresses and its payload.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Segment {
+    pub src_ip: [u8; 4],
+    pub src_port: u16,
+    pub dst_ip: [u8; 4],
+    pub dst_port: u16,
+    /// True for TCP, false for UDP.
+    pub tcp: bool,
+    pub payload: Vec<u8>,
+}
+
+/// Every TCP and UDP segment in `bytes` that carries a payload, in capture order.
+pub fn segments(bytes: &[u8]) -> Result<Vec<Segment>, String> {
     let packets = if bytes.starts_with(&PCAPNG_SECTION) {
         read_pcapng(bytes)?
     } else {
@@ -32,8 +53,8 @@ pub fn payloads(bytes: &[u8], port: Option<u16>) -> Result<Vec<Vec<u8>>, String>
                 "link type {linktype} is not supported (Ethernet and raw IP are)"
             ));
         }
-        if let Some(payload) = ip_payload(linktype, packet, port) {
-            out.push(payload);
+        if let Some(segment) = ip_segment(linktype, packet) {
+            out.push(segment);
         }
     }
     Ok(out)
@@ -166,7 +187,7 @@ fn read_pcapng(b: &[u8]) -> Result<Vec<Packet<'_>>, String> {
 }
 
 /// The TCP or UDP payload of one IPv4 packet, or `None` when there is none to keep.
-fn ip_payload(linktype: u32, packet: &[u8], port: Option<u16>) -> Option<Vec<u8>> {
+fn ip_segment(linktype: u32, packet: &[u8]) -> Option<Segment> {
     let ip = if linktype == LINKTYPE_RAW || linktype == LINKTYPE_RAW_A {
         packet
     } else {
@@ -206,7 +227,7 @@ fn ip_payload(linktype: u32, packet: &[u8], port: Option<u16>) -> Option<Vec<u8>
     }
     let segment = &ip[header..total];
 
-    let (src, dst, payload) = match ip[9] {
+    let (src_port, dst_port, payload, tcp) = match ip[9] {
         // TCP: the data offset in the high nibble of byte 12 gives the header length.
         6 => {
             if segment.len() < 20 {
@@ -220,6 +241,7 @@ fn ip_payload(linktype: u32, packet: &[u8], port: Option<u16>) -> Option<Vec<u8>
                 u16::from_be_bytes([segment[0], segment[1]]),
                 u16::from_be_bytes([segment[2], segment[3]]),
                 &segment[data_offset..],
+                true,
             )
         }
         // UDP: a fixed 8-byte header.
@@ -231,29 +253,42 @@ fn ip_payload(linktype: u32, packet: &[u8], port: Option<u16>) -> Option<Vec<u8>
                 u16::from_be_bytes([segment[0], segment[1]]),
                 u16::from_be_bytes([segment[2], segment[3]]),
                 &segment[8..],
+                false,
             )
         }
         _ => return None,
     };
 
-    if let Some(wanted) = port {
-        if src != wanted && dst != wanted {
-            return None;
-        }
-    }
     if payload.is_empty() {
-        None
-    } else {
-        Some(payload.to_vec())
+        return None;
     }
+    Some(Segment {
+        src_ip: [ip[12], ip[13], ip[14], ip[15]],
+        src_port,
+        dst_ip: [ip[16], ip[17], ip[18], ip[19]],
+        dst_port,
+        tcp,
+        payload: payload.to_vec(),
+    })
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
 
-    /// One Ethernet II / IPv4 / TCP packet carrying `payload`.
+    /// One Ethernet II / IPv4 / TCP packet from 10.0.0.1 to 10.0.0.2 carrying `payload`.
     pub(crate) fn tcp_packet(src_port: u16, dst_port: u16, payload: &[u8]) -> Vec<u8> {
+        tcp_packet_between([10, 0, 0, 1], src_port, [10, 0, 0, 2], dst_port, payload)
+    }
+
+    /// One Ethernet II / IPv4 / TCP packet between the given endpoints.
+    pub(crate) fn tcp_packet_between(
+        src_ip: [u8; 4],
+        src_port: u16,
+        dst_ip: [u8; 4],
+        dst_port: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
         let mut p = vec![0u8; 12];
         p.extend_from_slice(&[0x08, 0x00]); // IPv4
         let total = 20 + 20 + payload.len();
@@ -271,7 +306,8 @@ pub(crate) mod tests {
             0,
             0,
         ];
-        ip.extend_from_slice(&[10, 0, 0, 1, 10, 0, 0, 2]);
+        ip.extend_from_slice(&src_ip);
+        ip.extend_from_slice(&dst_ip);
         p.extend_from_slice(&ip);
         let mut tcp = Vec::new();
         tcp.extend_from_slice(&src_port.to_be_bytes());

@@ -167,7 +167,7 @@ async fn read_response(
 /// address (`holding_register[100]`), so a poll of registers 100-109 yields ten
 /// points. The normalizer alone would give only the first register, because a
 /// response does not carry the start address.
-fn register_points(
+pub(crate) fn register_points(
     spec: PollSpec,
     response: &ModbusRtuFrame,
     timestamp: u64,

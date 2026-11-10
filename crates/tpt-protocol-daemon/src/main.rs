@@ -1,10 +1,17 @@
 mod anomaly;
 mod capture;
 mod detect;
+mod http_out;
+mod influx;
 mod mapping;
 mod mcap_record;
+mod opcua_server;
+mod otel;
+mod parquet_record;
 mod pcap;
+mod pcap_modbus;
 mod plugins;
+mod prometheus;
 mod record;
 mod sink;
 mod transport;
@@ -90,10 +97,34 @@ struct Args {
     /// Topic prefix for `--mqtt`.
     #[arg(long = "mqtt-prefix", default_value = "tpt")]
     mqtt_prefix: String,
+    /// Write every point to an InfluxDB `/write` endpoint as line protocol, e.g.
+    /// `http://127.0.0.1:8086/write?db=tpt`. Plain HTTP only; batches of up to 500
+    /// lines, flushed every second. A refused batch is logged and dropped.
+    #[arg(long)]
+    influx: Option<String>,
+    /// Send every numeric point to an OpenTelemetry collector as OTLP/HTTP JSON metrics,
+    /// e.g. `http://127.0.0.1:4318/v1/metrics`. Plain HTTP only; one gauge per protocol.
+    /// Batches of up to 500 points, flushed every second. A refused batch is dropped.
+    #[arg(long)]
+    otel: Option<String>,
+    /// Send every numeric point to a Prometheus remote-write receiver, e.g.
+    /// `http://127.0.0.1:9090/api/v1/write`. Plain HTTP only; snappy-compressed protobuf,
+    /// one series `tpt_value` per point. Batches of up to 500, flushed every second.
+    #[arg(long = "prometheus-remote-write")]
+    prometheus_remote_write: Option<String>,
+    /// Serve the points as OPC UA (anonymous, no security) on this address, for example
+    /// `127.0.0.1:4840`. Read-only; see `opcua_server.rs` for what is supported.
+    #[arg(long = "opcua-listen")]
+    opcua_listen: Option<String>,
     /// Record every point to this MCAP file (one channel per series). Needs the
     /// `mcap-record` feature. See `mcap_record.rs` for what an interrupted file lacks.
     #[arg(long = "record-mcap")]
     record_mcap: Option<std::path::PathBuf>,
+    /// Record every point to this Parquet file (one row per point). Needs the
+    /// `parquet-record` feature. The file is readable only after the daemon exits
+    /// cleanly, because Parquet writes its footer last.
+    #[arg(long = "record-parquet")]
+    record_parquet: Option<std::path::PathBuf>,
     /// Require this token on WebSocket connections, as `?token=` or `Authorization: Bearer`.
     #[arg(long)]
     token: Option<String>,
@@ -650,6 +681,17 @@ async fn main() -> Result<()> {
             for dp in replay_candump(protocol, &raw)? {
                 println!("{}", json::to_json_string(&dp)?);
             }
+        } else if args.replay_format == "pcap" && protocol == "modbus" {
+            // Modbus needs the direction of each message, so requests and responses
+            // are paired per conversation rather than replayed as one stream.
+            let port = args.pcap_port.ok_or_else(|| {
+                anyhow!(
+                    "a Modbus pcap replay needs --pcap-port (the server's port), so requests and responses can be told apart"
+                )
+            })?;
+            for dp in pcap_modbus::replay(&raw, port)? {
+                println!("{}", json::to_json_string(&dp)?);
+            }
         } else if args.replay_format == "pcap" {
             for dp in replay_pcap(protocol, &raw, args.pcap_port)? {
                 println!("{}", json::to_json_string(&dp)?);
@@ -751,8 +793,31 @@ async fn main() -> Result<()> {
     if let Some(addr) = args.mqtt.clone() {
         sink::spawn_mqtt(&addr, &args.mqtt_prefix, tx.subscribe())?;
     }
+    if let Some(url) = args.influx.clone() {
+        let target = influx::parse_url(&url)?;
+        tokio::spawn(influx::run(target, tx.subscribe()));
+    }
+    if let Some(url) = args.otel.clone() {
+        let target = otel::parse_url(&url)?;
+        tokio::spawn(otel::run(target, tx.subscribe()));
+    }
+    if let Some(url) = args.prometheus_remote_write.clone() {
+        let target = prometheus::parse_url(&url)?;
+        tokio::spawn(prometheus::run(target, tx.subscribe()));
+    }
+    if let Some(addr) = args.opcua_listen.clone() {
+        let rx = tx.subscribe();
+        tokio::spawn(async move {
+            if let Err(e) = opcua_server::run(addr, rx).await {
+                tracing::error!("opcua: server stopped: {e:#}");
+            }
+        });
+    }
     if let Some(path) = args.record_mcap.clone() {
         mcap_record::spawn_mcap(&path, tx.subscribe())?;
+    }
+    if let Some(path) = args.record_parquet.clone() {
+        parquet_record::spawn_parquet(&path, tx.subscribe())?;
     }
     if let Some(path) = args.record.clone() {
         let record_tx = tx.clone();
@@ -1067,7 +1132,11 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{file} ({protocol}): {e}"));
         }
         // Every sample file in the directory is listed above, so none is forgotten.
-        let on_disk = std::fs::read_dir(dir).unwrap().count();
+        // Subdirectories (captures/, replayed by their own tests) are not counted.
+        let on_disk = std::fs::read_dir(dir)
+            .unwrap()
+            .filter(|entry| entry.as_ref().map(|e| e.path().is_file()).unwrap_or(false))
+            .count();
         assert_eq!(on_disk, SAMPLES.len(), "a sample file is not in SAMPLES");
     }
 
