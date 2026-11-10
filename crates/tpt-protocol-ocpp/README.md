@@ -1,7 +1,7 @@
 # tpt-protocol-ocpp
 
 OCPP (Open Charge Point Protocol) 2.0.1 EV-charging communication parser for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

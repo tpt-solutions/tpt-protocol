@@ -13,7 +13,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// Maximum length of a message id (OCPP-J section 4.2.3).
@@ -309,6 +309,80 @@ impl<'a> Scanner<'a> {
 
 /// Parses OCPP-J text. Use it for one WebSocket message at a time.
 pub struct OcppParser;
+
+/// Writes an [`OcppFrame`] as an OCPP-J array: `[2, id, action, payload]` for
+/// a Call, `[3, id, payload]` for a CallResult and `[4, id, code, description,
+/// details]` for a CallError. Strings are JSON-escaped. Payloads are JSON
+/// object text and are written as they are, so they must be valid JSON.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OcppEncoder;
+
+impl OcppEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// Escapes a string for a JSON string literal (with the quotes).
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+impl FrameEncoder for OcppEncoder {
+    type Frame = OcppFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        check_unique_id(&frame.unique_id)?;
+        if !frame.payload.starts_with('{') {
+            return Err(Error::Parse("OCPP-J payload must be a JSON object".into()));
+        }
+        let id = json_string(&frame.unique_id);
+        let text = match frame.message_type {
+            OcppMessageType::Call => {
+                let action = frame
+                    .action
+                    .as_ref()
+                    .ok_or_else(|| Error::Parse("OCPP-J Call has no action".into()))?;
+                format!(
+                    "[2,{id},{},{}]",
+                    json_string(action.as_str()),
+                    frame.payload
+                )
+            }
+            OcppMessageType::CallResult => format!("[3,{id},{}]", frame.payload),
+            OcppMessageType::CallError => {
+                let code = frame
+                    .error_code
+                    .as_deref()
+                    .ok_or_else(|| Error::Parse("OCPP-J CallError has no error code".into()))?;
+                let description = frame.error_description.as_deref().unwrap_or("");
+                format!(
+                    "[4,{id},{},{},{}]",
+                    json_string(code),
+                    json_string(description),
+                    frame.payload
+                )
+            }
+        };
+        Ok(text.into_bytes())
+    }
+}
 
 fn check_unique_id(id: &str) -> Result<(), Error> {
     if id.is_empty() || id.chars().count() > MAX_UNIQUE_ID {
@@ -670,9 +744,72 @@ mod tests {
 #[cfg(test)]
 mod fuzz {
     use super::*;
+    use alloc::string::ToString;
     use proptest::prelude::*;
 
+    /// A frame the encoder accepts: a Call, CallResult or CallError with
+    /// ids and text that need escaping, and simple JSON object payloads.
+    fn ocpp_model() -> impl Strategy<Value = OcppFrame> {
+        (
+            0usize..3,
+            "[a-zA-Z0-9\"\\\\ :.-]{1,36}",
+            0usize..4,
+            "[a-zA-Z0-9\"\\\\ :.-]{0,20}",
+            "[a-zA-Z0-9\"\\\\ :.-]{0,20}",
+            any::<bool>(),
+        )
+            .prop_map(|(kind, id, action, text, text2, with_value)| {
+                let payload = if with_value {
+                    format!(
+                        "{{\"k\":\"{}\"}}",
+                        text.replace('\\', "\\\\").replace('"', "\\\"")
+                    )
+                } else {
+                    "{}".to_string()
+                };
+                let action = match action {
+                    0 => OcppAction::Heartbeat,
+                    1 => OcppAction::BootNotification,
+                    2 => OcppAction::Other("Vendor.Action".to_string()),
+                    _ => OcppAction::MeterValues,
+                };
+                match kind {
+                    0 => OcppFrame {
+                        message_type: OcppMessageType::Call,
+                        unique_id: id,
+                        action: Some(action),
+                        payload,
+                        error_code: None,
+                        error_description: None,
+                    },
+                    1 => OcppFrame {
+                        message_type: OcppMessageType::CallResult,
+                        unique_id: id,
+                        action: None,
+                        payload,
+                        error_code: None,
+                        error_description: None,
+                    },
+                    _ => OcppFrame {
+                        message_type: OcppMessageType::CallError,
+                        unique_id: id,
+                        action: None,
+                        payload: "{}".to_string(),
+                        error_code: Some("GenericError".to_string()),
+                        error_description: Some(text2),
+                    },
+                }
+            })
+    }
+
     proptest! {
+        /// Encoding a frame and parsing the bytes gives back the same frame.
+        #[test]
+        fn encoded_frames_parse_back_to_the_same_model(frame in ocpp_model()) {
+            let bytes = OcppEncoder::new().encode(&frame).unwrap();
+            prop_assert_eq!(OcppParser.parse(&bytes).unwrap(), frame);
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             // The parser must never panic on arbitrary input; it returns an
@@ -740,5 +877,44 @@ mod fuzz {
                 let _ = OcppNormalizer.normalize_all(&frame);
             }
         }
+    }
+}
+
+impl OcppParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for OcppParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OcppValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for OcppValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OcppNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for OcppNormalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }

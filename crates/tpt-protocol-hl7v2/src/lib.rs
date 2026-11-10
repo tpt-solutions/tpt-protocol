@@ -4,10 +4,11 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -64,6 +65,96 @@ pub struct Hl7Frame {
     pub msh: MshSegment,
     pub segments: Vec<Hl7Segment>,
     pub raw: String,
+}
+
+/// Writes an [`Hl7Frame`] as an HL7 v2 message: the MSH segment, then each
+/// segment, every segment ending in a carriage return. Fields are joined with
+/// the MSH field separator and components with `^`, which is how the parser
+/// splits them, so the segments come back as they were.
+///
+/// MSH-8 (security) is not kept by the parser, so it is written empty, and
+/// MSH fields after MSH-12 are not kept either. `raw` is not used: the message
+/// is rebuilt from the parsed fields.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Hl7Encoder;
+
+impl Hl7Encoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for Hl7Encoder {
+    type Frame = Hl7Frame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        let sep = frame.msh.field_separator.as_str();
+        if sep.len() != 1 || !sep.is_ascii() {
+            return Err(Error::Parse(
+                "hl7: the field separator must be one ASCII character".into(),
+            ));
+        }
+        let check = |text: &str| -> Result<(), Error> {
+            if text.contains(['\r', '\n']) || text.contains(sep) {
+                Err(Error::Parse(format!(
+                    "hl7: field {text:?} contains the separator or a line break"
+                )))
+            } else {
+                Ok(())
+            }
+        };
+
+        let msh = &frame.msh;
+        let msh_fields = [
+            msh.encoding_chars.as_str(),
+            msh.sending_app.as_str(),
+            msh.sending_facility.as_str(),
+            msh.receiving_app.as_str(),
+            msh.receiving_facility.as_str(),
+            msh.date_time.as_str(),
+            "", // MSH-8 security, not kept by the parser
+            msh.message_type.as_str(),
+            msh.message_control_id.as_str(),
+            msh.processing_id.as_str(),
+            msh.version_id.as_str(),
+        ];
+        let mut out = String::from("MSH");
+        out.push_str(sep);
+        for (i, field) in msh_fields.iter().enumerate() {
+            check(field)?;
+            if i > 0 {
+                out.push_str(sep);
+            }
+            out.push_str(field);
+        }
+        out.push('\r');
+
+        for segment in &frame.segments {
+            if segment.name.len() != 3 || !segment.name.is_ascii() {
+                return Err(Error::Parse(format!(
+                    "hl7: segment name {:?} must be three ASCII characters",
+                    segment.name
+                )));
+            }
+            out.push_str(&segment.name);
+            for (i, field) in segment.fields.iter().enumerate() {
+                // The parser's first field is the empty piece before the first
+                // separator, so a separator goes between fields and not before the first.
+                if i > 0 {
+                    out.push_str(sep);
+                }
+                for (j, component) in field.components.iter().enumerate() {
+                    check(component)?;
+                    if j > 0 {
+                        out.push('^');
+                    }
+                    out.push_str(component);
+                }
+            }
+            out.push('\r');
+        }
+        Ok(out.into_bytes())
+    }
 }
 
 pub struct Hl7Parser;
@@ -425,6 +516,33 @@ mod fuzz {
     use proptest::prelude::*;
 
     proptest! {
+        /// A message built from fields without separators: parsing, encoding
+        /// and parsing again gives the same message. `raw` is the input text,
+        /// so it is left out of the comparison.
+        #[test]
+        fn encode_round_trips_parsed_messages(
+            app in "[A-Za-z0-9 ]{0,8}",
+            facility in "[A-Za-z0-9 ]{0,8}",
+            control_id in "[A-Za-z0-9]{0,8}",
+            patient in "[A-Za-z0-9]{0,8}",
+            family in "[A-Za-z0-9]{0,8}",
+            given in "[A-Za-z0-9]{0,8}",
+            observation in "[A-Za-z0-9 .]{0,12}",
+            event in 1u8..9,
+        ) {
+            let text = format!(
+                "MSH|^~\\&|{app}|{facility}|RCV|RCVF|20260101120000||ADT^A0{event}|{control_id}|P|2.5\rPID|1||{patient}||{family}^{given}\rOBX|1|ST|{observation}\r"
+            );
+            let parser = Hl7Parser;
+            let frame = parser.parse(text.as_bytes()).unwrap();
+            let encoded = Hl7Encoder::new().encode(&frame).unwrap();
+            let parsed = parser.parse(&encoded).unwrap();
+            prop_assert_eq!(&parsed.msh, &frame.msh);
+            prop_assert_eq!(&parsed.segments, &frame.segments);
+            prop_assert_eq!(parsed.message_type, frame.message_type);
+            prop_assert_eq!(parsed.trigger_event, frame.trigger_event);
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = Hl7Parser;
@@ -487,5 +605,44 @@ mod fuzz {
                 let _ = Hl7Normalizer.normalize_all(&frame);
             }
         }
+    }
+}
+
+impl Hl7Parser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Hl7Parser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Hl7Validator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Hl7Validator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Hl7Normalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for Hl7Normalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -1,7 +1,7 @@
 # tpt-protocol-nmea
 
 NMEA 0183 marine navigation protocol parser for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 
@@ -92,7 +92,14 @@ sentence, device-id formatting). It works on alloc-capable embedded targets.
   - Checksum failures are reported (`checksum_valid = false`, quality `Bad`) but
     not rejected with an error.
   - Normalised `timestamp` is `0`; callers must supply a real timestamp.
-  - NMEA 2000 (binary CAN) is out of scope; this crate covers NMEA 0183 ASCII only.
+  - NMEA 2000 (`nmea2000` module): the CAN frame parser, an encoder, and a
+    `FastPacketReassembler` for fast-packet PGNs (126996, 129029, 129540). Decoded
+    PGNs: 129025 (position, rapid), 127250 (heading), 130306 (wind), 128267 (depth),
+    and 129029 (GNSS position, latitude, longitude and altitude; the date and time
+    are not decoded). A fast-packet PGN passed as a single frame is refused, so a
+    partial message is never normalized. Other PGNs are parsed but not decoded. The
+    field layouts follow the published PGN definitions and have not been checked
+    against a real bus capture.
 
 ## Related crates
 

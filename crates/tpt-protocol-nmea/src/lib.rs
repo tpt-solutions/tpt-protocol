@@ -4,12 +4,14 @@
 
 extern crate alloc;
 
+pub mod nmea2000;
+
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// NMEA 0183 talker identifier.
@@ -163,6 +165,60 @@ impl fmt::Display for NmeaFrame {
             self.checksum,
             if self.checksum_valid { "OK" } else { "BAD" },
         )
+    }
+}
+
+/// Writes an [`NmeaFrame`] as an NMEA 0183 sentence: `$`, the talker and
+/// sentence identifiers, a comma and the comma-separated fields, `*`, and the
+/// XOR checksum in hex. Unknown talker and sentence identifiers are written
+/// as parsed, not as their `??` / `???` display form.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NmeaEncoder;
+
+impl NmeaEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for NmeaEncoder {
+    type Frame = NmeaFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if let Some(bad) = frame.fields.iter().find(|f| f.contains([',', '*', '$'])) {
+            return Err(Error::Parse(format!(
+                "NMEA field {bad:?} contains a reserved character (',', '*' or '$')"
+            )));
+        }
+
+        let talker: [u8; 2] = match frame.talker {
+            Talker::Unknown(b) => b,
+            known => {
+                let s = known.as_str().as_bytes();
+                [s[0], s[1]]
+            }
+        };
+        let sentence: [u8; 3] = match frame.sentence {
+            SentenceType::Unknown(b) => b,
+            known => {
+                let s = known.as_str().as_bytes();
+                [s[0], s[1], s[2]]
+            }
+        };
+
+        let mut body =
+            Vec::with_capacity(6 + frame.fields.iter().map(|f| f.len() + 1).sum::<usize>());
+        body.extend_from_slice(&talker);
+        body.extend_from_slice(&sentence);
+        body.push(b',');
+        body.extend_from_slice(frame.fields.join(",").as_bytes());
+
+        let checksum = compute_nmea_checksum(&body);
+        let mut out = Vec::with_capacity(body.len() + 4);
+        out.push(b'$');
+        out.extend_from_slice(&body);
+        out.extend_from_slice(format!("*{checksum:02X}").as_bytes());
+        Ok(out)
     }
 }
 
@@ -1124,6 +1180,32 @@ mod fuzz {
                 let _ = NmeaNormalizer::new().points(&frame);
                 let _ = NmeaNormalizer::new().normalize_all(&frame);
             }
+        }
+
+        /// Encoding a frame and parsing the result gives the same identifiers
+        /// and fields, with a checksum that verifies.
+        #[test]
+        fn encoded_sentences_parse_back(
+            talker in "[A-Z]{2}",
+            sentence in "[A-Z]{3}",
+            // Empty fields are not generated: a single empty field encodes to
+            // the same bytes as no fields, so the two cannot be told apart.
+            fields in proptest::collection::vec("[A-Za-z0-9.+-]{1,8}", 0..8),
+        ) {
+            let frame = NmeaFrame {
+                talker: Talker::from_bytes(talker.as_bytes()),
+                sentence: SentenceType::from_bytes(sentence.as_bytes()),
+                fields: fields.clone(),
+                checksum: 0,
+                checksum_valid: false,
+                raw: String::new(),
+            };
+            let bytes = NmeaEncoder::new().encode(&frame).unwrap();
+            let parsed = NmeaParser::new().parse(&bytes).unwrap();
+            prop_assert_eq!(parsed.talker, frame.talker);
+            prop_assert_eq!(parsed.sentence, frame.sentence);
+            prop_assert_eq!(parsed.fields, fields);
+            prop_assert!(parsed.checksum_valid);
         }
     }
 }

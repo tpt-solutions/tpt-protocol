@@ -1,7 +1,7 @@
 # tpt-protocol-hl7v2
 
 HL7 v2.x healthcare messaging protocol parsing, validation, and TUP
-normalisation for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+normalisation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 HL7 v2 is the dominant pipe-delimited text format for clinical and administrative
 data exchange between hospital systems (EHRs, lab, ADT, order entry). TPT decodes
