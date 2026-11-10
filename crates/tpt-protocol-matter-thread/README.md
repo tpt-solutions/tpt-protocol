@@ -1,7 +1,7 @@
 # tpt-protocol-matter-thread
 
 Matter / Thread smart-home connectivity protocol parser for the
-[TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+[TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

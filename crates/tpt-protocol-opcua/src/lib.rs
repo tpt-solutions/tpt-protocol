@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// OPC UA Binary message type (OPC 10000-6, section 7.1.2).
@@ -134,6 +134,85 @@ fn decode_numeric_node_id(body: &[u8]) -> Result<Option<(u16, u32, usize)>, Erro
             Ok(Some((ns, le_u32(body, 3), 7)))
         }
         _ => Ok(None),
+    }
+}
+
+/// Writes an [`OpcuaFrame`] as an OPC UA Binary message. The message size is
+/// computed from the content, not read from `message_size`. A MSG with a
+/// service ID is written as an ExtensionObject: a numeric TypeId (the
+/// namespace, 0 when unset, and the ID), a binary encoding byte, an int32
+/// length and the payload. Without a service ID the payload is written as is.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OpcuaEncoder;
+
+impl OpcuaEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for OpcuaEncoder {
+    type Frame = OpcuaFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        let has_sequence = frame.message_type.has_sequence_header();
+        if !has_sequence
+            && (frame.channel_id != 0
+                || frame.token_id != 0
+                || frame.sequence_num != 0
+                || frame.request_id != 0)
+        {
+            return Err(Error::Parse(format!(
+                "OPC UA {} has no secure channel header, so its channel, token, sequence and request fields must be zero",
+                frame.message_type
+            )));
+        }
+
+        let body = if frame.message_type == OpcuaMessageType::Message {
+            match (frame.service_id, frame.type_namespace) {
+                (Some(id), namespace) => {
+                    let mut body = Vec::with_capacity(12 + frame.payload.len());
+                    // Numeric TypeId: encoding 0x02, namespace (u16), identifier (u32).
+                    body.push(0x02);
+                    body.extend_from_slice(&namespace.unwrap_or(0).to_le_bytes());
+                    body.extend_from_slice(&id.to_le_bytes());
+                    // Binary encoding with an int32 length.
+                    body.push(0x01);
+                    let length = i32::try_from(frame.payload.len()).map_err(|_| {
+                        Error::Parse("OPC UA ExtensionObject body is too long".into())
+                    })?;
+                    body.extend_from_slice(&length.to_le_bytes());
+                    body.extend_from_slice(&frame.payload);
+                    body
+                }
+                (None, None) => frame.payload.clone(),
+                (None, Some(namespace)) => {
+                    return Err(Error::Parse(format!(
+                        "OPC UA type namespace {namespace} is set without a service ID"
+                    )));
+                }
+            }
+        } else {
+            frame.payload.clone()
+        };
+
+        let sequence_len = if has_sequence { SEQUENCE_HEADER } else { 0 };
+        let size = MESSAGE_HEADER + sequence_len + body.len();
+        let size =
+            u32::try_from(size).map_err(|_| Error::Parse("OPC UA message is too long".into()))?;
+
+        let mut out = Vec::with_capacity(size as usize);
+        out.extend_from_slice(frame.message_type.as_str().as_bytes());
+        out.push(frame.chunk_type);
+        out.extend_from_slice(&size.to_le_bytes());
+        if has_sequence {
+            out.extend_from_slice(&frame.channel_id.to_le_bytes());
+            out.extend_from_slice(&frame.token_id.to_le_bytes());
+            out.extend_from_slice(&frame.sequence_num.to_le_bytes());
+            out.extend_from_slice(&frame.request_id.to_le_bytes());
+        }
+        out.extend_from_slice(&body);
+        Ok(out)
     }
 }
 
@@ -577,13 +656,137 @@ mod fuzz {
     use super::*;
     use proptest::prelude::*;
 
+    /// A frame the encoder accepts: the secure channel fields only for types
+    /// that carry them, and a service ID (with its namespace) only on MSG.
+    fn opcua_model() -> impl Strategy<Value = OpcuaFrame> {
+        (
+            0usize..6,
+            0usize..3,
+            (any::<u32>(), any::<u32>(), any::<u32>(), any::<u32>()),
+            proptest::option::of((any::<u16>(), any::<u32>())),
+            proptest::collection::vec(any::<u8>(), 0..64),
+        )
+            .prop_map(
+                |(ti, ci, (channel, token, sequence, request), service, mut payload)| {
+                    let message_type = match ti {
+                        0 => OpcuaMessageType::Hello,
+                        1 => OpcuaMessageType::Acknowledge,
+                        2 => OpcuaMessageType::Error,
+                        3 => OpcuaMessageType::Message,
+                        4 => OpcuaMessageType::OpenSecureChannel,
+                        _ => OpcuaMessageType::CloseSecureChannel,
+                    };
+                    let (channel_id, token_id, sequence_num, request_id) =
+                        if message_type.has_sequence_header() {
+                            (channel, token, sequence, request)
+                        } else {
+                            (0, 0, 0, 0)
+                        };
+                    let (service_id, type_namespace) = match (message_type, service) {
+                        (OpcuaMessageType::Message, Some((namespace, id))) => {
+                            (Some(id), Some(namespace))
+                        }
+                        (OpcuaMessageType::Message, None) => {
+                            // A low nibble of 0xF is not a NodeId encoding, so the
+                            // payload reads back as raw bytes.
+                            if payload.is_empty() {
+                                payload.push(0x0F);
+                            } else {
+                                payload[0] |= 0x0F;
+                            }
+                            (None, None)
+                        }
+                        _ => (None, None),
+                    };
+                    OpcuaFrame {
+                        message_type,
+                        chunk_type: b"FCA"[ci],
+                        message_size: 0,
+                        channel_id,
+                        token_id,
+                        sequence_num,
+                        request_id,
+                        service_id,
+                        type_namespace,
+                        payload,
+                    }
+                },
+            )
+    }
+
     proptest! {
+        /// Encoding a model frame and parsing the bytes gives back the same
+        /// frame (the message size is computed, so it is filled in first).
+        #[test]
+        fn encoded_frames_parse_back_to_the_same_model(frame in opcua_model()) {
+            let bytes = OpcuaEncoder::new().encode(&frame).unwrap();
+            let parsed = OpcuaParser::new().parse(&bytes).unwrap();
+            let mut expected = frame;
+            expected.message_size = parsed.message_size;
+            prop_assert_eq!(parsed, expected);
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = OpcuaParser::new();
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// An OPC UA message with a known three-byte type, a valid chunk type and a
+    /// message_size equal to the frame length. The body is random, so the
+    /// sequence header, service identifiers and payload are all exercised.
+    fn opcua_message() -> impl Strategy<Value = Vec<u8>> {
+        const TYPES: [&[u8; 3]; 6] = [b"HEL", b"ACK", b"ERR", b"MSG", b"OPN", b"CLO"];
+        (
+            0usize..TYPES.len(),
+            0usize..3,
+            proptest::collection::vec(any::<u8>(), 0..96),
+        )
+            .prop_map(|(ti, ci, body)| {
+                let chunk = b"FCA"[ci];
+                let size = (8 + body.len()) as u32;
+                let mut out = alloc::vec::Vec::with_capacity(8 + body.len());
+                out.extend_from_slice(TYPES[ti]);
+                out.push(chunk);
+                out.extend_from_slice(&size.to_le_bytes());
+                out.extend_from_slice(&body);
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed message.
+    fn mutated_opcua() -> impl Strategy<Value = Vec<u8>> {
+        (opcua_message(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_opcua_never_panics(bytes in mutated_opcua()) {
+            let _ = OpcuaParser::new().parse(&bytes);
+            let _ = OpcuaParser::new().try_parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_opcua_never_panics_in_the_normalizer(bytes in opcua_message()) {
+            if let Ok(frame) = OpcuaParser::new().parse(&bytes) {
+                let _ = OpcuaNormalizer::new().normalize(&frame);
+            }
         }
     }
 }

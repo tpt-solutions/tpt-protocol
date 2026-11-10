@@ -881,4 +881,109 @@ mod fuzz {
             let _ = decode_tlv(&bytes);
         }
     }
+
+    /// A Matter message: flags (version 0, source node present, destination
+    /// type), security flags, session ID, message counter, optional node IDs,
+    /// then a payload. Session 0 is plaintext; other sessions are encrypted.
+    fn matter_message() -> impl Strategy<Value = Vec<u8>> {
+        (
+            0u8..8,
+            any::<u8>(),
+            any::<u16>(),
+            any::<u32>(),
+            any::<u64>(),
+            any::<u64>(),
+            any::<u16>(),
+            proptest::collection::vec(any::<u8>(), 0..64),
+        )
+            .prop_map(
+                |(flags, security, session, counter, src, dst_node, dst_group, payload)| {
+                    let mut out = alloc::vec![flags, security];
+                    out.extend_from_slice(&session.to_le_bytes());
+                    out.extend_from_slice(&counter.to_le_bytes());
+                    if flags & 0x04 != 0 {
+                        out.extend_from_slice(&src.to_le_bytes());
+                    }
+                    match flags & 0x03 {
+                        1 => out.extend_from_slice(&dst_node.to_le_bytes()),
+                        2 => out.extend_from_slice(&dst_group.to_le_bytes()),
+                        _ => {}
+                    }
+                    out.extend_from_slice(&payload);
+                    out
+                },
+            )
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed message.
+    fn mutated_matter() -> impl Strategy<Value = Vec<u8>> {
+        (matter_message(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_matter_never_panics(bytes in mutated_matter()) {
+            let _ = MatterParser.parse(&bytes);
+            let _ = decode_tlv(&bytes);
+        }
+
+        #[test]
+        fn well_formed_matter_never_panics_in_the_normalizer(bytes in matter_message()) {
+            if let Ok(frame) = MatterParser.parse(&bytes) {
+                let _ = MatterNormalizer.normalize(&frame);
+            }
+        }
+    }
+}
+
+impl MatterParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for MatterParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MatterValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for MatterValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MatterNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for MatterNormalizer {
+    fn default() -> Self {
+        Self::new()
+    }
 }

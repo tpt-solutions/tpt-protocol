@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 // ---------------------------------------------------------------------------
@@ -181,6 +181,101 @@ impl fmt::Display for DoipSomeipFrame {
         match self {
             Self::Doip(d) => write!(f, "{d}"),
             Self::Someip(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Writes a [`DoipSomeipFrame`] as wire bytes: a DoIP message (version, inverse
+/// version, payload type, payload length, payload) or a SOME/IP message (the
+/// 16-byte header, then the payload). The lengths must match the payload, so
+/// a frame whose length field disagrees with its payload is an error.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DoipSomeipEncoder;
+
+impl DoipSomeipEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+fn payload_type_value(payload_type: DoipPayloadType) -> u16 {
+    match payload_type {
+        DoipPayloadType::GenericDoipHeaderNegativeAck => 0x0000,
+        DoipPayloadType::VehicleIdentificationRequest => 0x0001,
+        DoipPayloadType::VehicleIdentificationRequestEid => 0x0002,
+        DoipPayloadType::VehicleIdentificationRequestVin => 0x0003,
+        DoipPayloadType::VehicleIdentificationResponse => 0x0004,
+        DoipPayloadType::RoutingActivationRequest => 0x0005,
+        DoipPayloadType::RoutingActivationResponse => 0x0006,
+        DoipPayloadType::AliveCheckRequest => 0x0007,
+        DoipPayloadType::AliveCheckResponse => 0x0008,
+        DoipPayloadType::EntityStatusRequest => 0x4001,
+        DoipPayloadType::EntityStatusResponse => 0x4002,
+        DoipPayloadType::PowerModeInformationRequest => 0x4003,
+        DoipPayloadType::PowerModeInformationResponse => 0x4004,
+        DoipPayloadType::DiagnosticMessage => 0x8001,
+        DoipPayloadType::DiagnosticMessagePositiveAck => 0x8002,
+        DoipPayloadType::DiagnosticMessageNegativeAck => 0x8003,
+        DoipPayloadType::Unknown(value) => value,
+    }
+}
+
+fn someip_message_type_value(message_type: SomeipMessageType) -> u8 {
+    match message_type {
+        SomeipMessageType::Request => 0x00,
+        SomeipMessageType::RequestNoReturn => 0x01,
+        SomeipMessageType::Notification => 0x02,
+        SomeipMessageType::Response => 0x80,
+        SomeipMessageType::Error => 0x81,
+        SomeipMessageType::Unknown(value) => value,
+    }
+}
+
+impl FrameEncoder for DoipSomeipEncoder {
+    type Frame = DoipSomeipFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        match frame {
+            DoipSomeipFrame::Doip(doip) => {
+                if doip.payload_length as usize != doip.payload.len() {
+                    return Err(Error::Parse(format!(
+                        "DoIP payload_length {} does not match {} payload bytes",
+                        doip.payload_length,
+                        doip.payload.len()
+                    )));
+                }
+                let mut out = Vec::with_capacity(8 + doip.payload.len());
+                out.push(doip.protocol_version);
+                out.push(doip.inverse_version);
+                out.extend_from_slice(&payload_type_value(doip.payload_type).to_be_bytes());
+                out.extend_from_slice(&doip.payload_length.to_be_bytes());
+                out.extend_from_slice(&doip.payload);
+                Ok(out)
+            }
+            DoipSomeipFrame::Someip(someip) => {
+                let length = 8usize
+                    .checked_add(someip.payload.len())
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| Error::Parse("SOME/IP payload is too long".into()))?;
+                if someip.length != length {
+                    return Err(Error::Parse(format!(
+                        "SOME/IP length {} does not match the {} bytes it covers",
+                        someip.length, length
+                    )));
+                }
+                let mut out = Vec::with_capacity(16 + someip.payload.len());
+                out.extend_from_slice(&someip.service_id.to_be_bytes());
+                out.extend_from_slice(&someip.method_id.to_be_bytes());
+                out.extend_from_slice(&length.to_be_bytes());
+                out.extend_from_slice(&someip.client_id.to_be_bytes());
+                out.extend_from_slice(&someip.session_id.to_be_bytes());
+                out.push(someip.protocol_version);
+                out.push(someip.interface_version);
+                out.push(someip_message_type_value(someip.message_type));
+                out.push(someip.return_code);
+                out.extend_from_slice(&someip.payload);
+                Ok(out)
+            }
         }
     }
 }
@@ -695,12 +790,113 @@ mod fuzz {
     use proptest::prelude::*;
 
     proptest! {
+        /// Both branches are exact inverses of the parser, so parse then encode
+        /// gives back the input bytes.
+        #[test]
+        fn parsed_frames_encode_back_to_the_same_bytes(
+            bytes in proptest::collection::vec(any::<u8>(), 0..96)
+        ) {
+            if let Ok(frame) = DoipSomeipParser::new().parse(&bytes) {
+                prop_assert_eq!(DoipSomeipEncoder::new().encode(&frame).unwrap(), bytes);
+            }
+        }
+
         #[test]
         fn parse_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..1024)) {
             let parser = DoipSomeipParser::new();
             // The parser must never panic on arbitrary input; it returns an
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
+        }
+    }
+
+    /// A DoIP message (version, inverse version, payload type from the ISO
+    /// 13400-2 table, length, payload) with the length exact, or a SOME/IP
+    /// message (16-byte header, length counting from the request ID) with the
+    /// length exact.
+    fn doip_someip_frame() -> impl Strategy<Value = Vec<u8>> {
+        const VERSIONS: [u8; 4] = [0x01, 0x02, 0x03, 0xFF];
+        const PAYLOAD_TYPES: [u16; 12] = [
+            0x0000, 0x0001, 0x0002, 0x0003, 0x0004, 0x0005, 0x0006, 0x0007, 0x0008, 0x8001, 0x8002,
+            0x8003,
+        ];
+        (
+            any::<bool>(),
+            0usize..VERSIONS.len(),
+            any::<u8>(),
+            0usize..PAYLOAD_TYPES.len(),
+            any::<u16>(),
+            proptest::collection::vec(any::<u8>(), 0..64),
+            proptest::collection::vec(any::<u8>(), 16..=16),
+        )
+            .prop_map(
+                |(is_doip, vi, raw_version, pi, raw_type, payload, someip_hdr)| {
+                    if is_doip {
+                        let version = VERSIONS[vi];
+                        // Mostly the table versions, sometimes any byte.
+                        let version = if raw_version < 0x80 {
+                            version
+                        } else {
+                            raw_version
+                        };
+                        let payload_type = if raw_type & 1 == 0 {
+                            PAYLOAD_TYPES[pi]
+                        } else {
+                            raw_type
+                        };
+                        let mut out = alloc::vec![version, !version];
+                        out.extend_from_slice(&payload_type.to_be_bytes());
+                        out.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+                        out.extend_from_slice(&payload);
+                        out
+                    } else {
+                        // SOME/IP: a 16-byte header (service, method, length,
+                        // client, session, protocol and interface versions,
+                        // message and return types), then the payload. The
+                        // length counts from the request ID (byte 8).
+                        let mut out = someip_hdr;
+                        out.extend_from_slice(&payload);
+                        let length = (out.len() - 8) as u32;
+                        out[4..8].copy_from_slice(&length.to_be_bytes());
+                        out
+                    }
+                },
+            )
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed frame.
+    fn mutated_doip_someip() -> impl Strategy<Value = Vec<u8>> {
+        (
+            doip_someip_frame(),
+            any::<usize>(),
+            any::<u8>(),
+            any::<bool>(),
+        )
+            .prop_map(|(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn structured_doip_someip_never_panics(bytes in mutated_doip_someip()) {
+            let _ = DoipSomeipParser::new().parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_doip_someip_never_panics_in_the_normalizer(bytes in doip_someip_frame()) {
+            if let Ok(frame) = DoipSomeipParser::new().parse(&bytes) {
+                let _ = DoipSomeipNormalizer::new().normalize(&frame);
+            }
         }
     }
 }

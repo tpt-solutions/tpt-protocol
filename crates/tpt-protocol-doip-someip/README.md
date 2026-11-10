@@ -1,7 +1,7 @@
 # tpt-protocol-doip-someip
 
 DoIP (ISO 13400) and SOME/IP automotive Ethernet protocol parsing, validation, and
-TUP normalisation for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+TUP normalisation for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 This crate covers two companion automotive Ethernet protocols used in modern
 vehicle diagnostics and service-oriented architectures (SOA): **DoIP** for

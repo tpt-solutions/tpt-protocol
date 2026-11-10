@@ -1,7 +1,7 @@
 # tpt-protocol-opcua
 
 OPC UA (Open Platform Communications Unified Architecture) Industry 4.0 protocol
-parser for the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+parser for the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

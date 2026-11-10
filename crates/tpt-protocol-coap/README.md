@@ -1,7 +1,7 @@
 # tpt-protocol-coap
 
 CoAP (RFC 7252) constrained-IoT protocol parser, validator, and TUP normalizer for
-the [TPT Protocol](https://github.com/tpt-protocol/tpt-protocol) suite.
+the [TPT Protocol](https://github.com/tpt-solutions/tpt-protocol) suite.
 
 ## Overview
 

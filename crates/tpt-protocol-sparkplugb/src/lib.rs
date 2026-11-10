@@ -13,7 +13,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 /// Sparkplug B topic namespace.
@@ -404,6 +404,139 @@ fn decode_payload(bytes: &[u8], topic: Option<SparkplugTopic>) -> Result<Sparkpl
     Ok(frame)
 }
 
+fn put_varint(mut value: u64, out: &mut Vec<u8>) {
+    loop {
+        let byte = (value & 0x7F) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+fn put_key(field: u64, wire: u64, out: &mut Vec<u8>) {
+    put_varint((field << 3) | wire, out);
+}
+
+fn put_length_delimited(field: u64, bytes: &[u8], out: &mut Vec<u8>) {
+    put_key(field, 2, out);
+    put_varint(bytes.len() as u64, out);
+    out.extend_from_slice(bytes);
+}
+
+/// Writes one metric (a `Metric` message inside the payload). The value field
+/// is chosen from the datatype, the same way the parser reads it back.
+fn encode_metric(metric: &Metric, out: &mut Vec<u8>) -> Result<(), Error> {
+    let mut m = Vec::new();
+    put_length_delimited(1, metric.name.as_bytes(), &mut m);
+    if let Some(alias) = metric.alias {
+        put_key(2, 0, &mut m);
+        put_varint(alias, &mut m);
+    }
+    if let Some(timestamp) = metric.timestamp {
+        put_key(3, 0, &mut m);
+        put_varint(timestamp, &mut m);
+    }
+    put_key(4, 0, &mut m);
+    put_varint(u64::from(metric.datatype), &mut m);
+
+    match &metric.value {
+        // No value: the metric is null.
+        None => {
+            put_key(7, 0, &mut m);
+            put_varint(1, &mut m);
+        }
+        Some(value) => match (metric.datatype, value) {
+            (
+                datatype::INT8
+                | datatype::INT16
+                | datatype::INT32
+                | datatype::UINT8
+                | datatype::UINT16
+                | datatype::UINT32,
+                TupValue::Int(v),
+            ) => {
+                put_key(10, 0, &mut m);
+                put_varint(*v as u32 as u64, &mut m);
+            }
+            (datatype::INT64 | datatype::DATETIME, TupValue::Int(v)) => {
+                put_key(11, 0, &mut m);
+                put_varint(*v as u64, &mut m);
+            }
+            (datatype::UINT64, TupValue::Int(v)) => {
+                if *v < 0 {
+                    return Err(Error::Parse("Sparkplug UInt64 value is negative".into()));
+                }
+                put_key(11, 0, &mut m);
+                put_varint(*v as u64, &mut m);
+            }
+            (datatype::FLOAT, TupValue::Float(v)) => {
+                put_key(12, 5, &mut m);
+                m.extend_from_slice(&(*v as f32).to_bits().to_le_bytes());
+            }
+            (datatype::DOUBLE, TupValue::Float(v)) => {
+                put_key(13, 1, &mut m);
+                m.extend_from_slice(&v.to_bits().to_le_bytes());
+            }
+            (datatype::BOOLEAN, TupValue::Bool(v)) => {
+                put_key(14, 0, &mut m);
+                put_varint(u64::from(*v), &mut m);
+            }
+            (datatype::STRING | datatype::TEXT | datatype::UUID, TupValue::Text(v)) => {
+                put_length_delimited(15, v.as_bytes(), &mut m);
+            }
+            (datatype::BYTES | datatype::FILE, TupValue::Bytes(v)) => {
+                put_length_delimited(16, v, &mut m);
+            }
+            (other, _) => return Err(mismatch(other)),
+        },
+    }
+    put_length_delimited(2, &m, out);
+    Ok(())
+}
+
+/// Writes a [`SparkplugFrame`] as a Sparkplug B `Payload` message: timestamp,
+/// metrics, sequence, UUID and body. The topic is not part of the payload, so
+/// it is not written; decode the bytes with [`SparkplugParser`] to get the
+/// frame back (without a topic). Metrics with datasets or templates have no
+/// decoded value and are written as null.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SparkplugEncoder;
+
+impl SparkplugEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl FrameEncoder for SparkplugEncoder {
+    type Frame = SparkplugFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        let mut out = Vec::new();
+        if let Some(timestamp) = frame.timestamp {
+            put_key(1, 0, &mut out);
+            put_varint(timestamp, &mut out);
+        }
+        for metric in &frame.metrics {
+            encode_metric(metric, &mut out)?;
+        }
+        if let Some(seq) = frame.seq {
+            put_key(3, 0, &mut out);
+            put_varint(seq, &mut out);
+        }
+        if let Some(uuid) = &frame.uuid {
+            put_length_delimited(4, uuid.as_bytes(), &mut out);
+        }
+        if let Some(body) = &frame.body {
+            put_length_delimited(5, body, &mut out);
+        }
+        Ok(out)
+    }
+}
+
 /// Decodes Sparkplug B payloads. The payload bytes alone are enough; use
 /// [`decode`] to attach the topic.
 pub struct SparkplugParser;
@@ -775,5 +908,164 @@ mod fuzz {
             // Err for malformed frames instead.
             let _ = SparkplugParser.parse(&bytes);
         }
+    }
+
+    fn pb_varint(mut v: u64, out: &mut alloc::vec::Vec<u8>) {
+        loop {
+            let b = (v & 0x7F) as u8;
+            v >>= 7;
+            if v == 0 {
+                out.push(b);
+                break;
+            }
+            out.push(b | 0x80);
+        }
+    }
+
+    fn pb_key(field: u64, wire: u64, out: &mut alloc::vec::Vec<u8>) {
+        pb_varint((field << 3) | wire, out);
+    }
+
+    fn pb_bytes_field(field: u64, bytes: &[u8], out: &mut alloc::vec::Vec<u8>) {
+        pb_key(field, 2, out);
+        pb_varint(bytes.len() as u64, out);
+        out.extend_from_slice(bytes);
+    }
+
+    /// A Sparkplug B Payload (timestamp, metrics, sequence). Each metric has a
+    /// name, alias, datatype and one value of an int, long, boolean or string
+    /// kind. The varint fields use the field numbers from the Sparkplug proto.
+    fn sparkplug_payload() -> impl Strategy<Value = Vec<u8>> {
+        (
+            any::<u64>(),
+            any::<u64>(),
+            proptest::collection::vec(
+                (
+                    "[a-zA-Z0-9/]{0,16}",
+                    any::<u64>(),
+                    0u32..20,
+                    0usize..4,
+                    any::<u64>(),
+                ),
+                0..6,
+            ),
+        )
+            .prop_map(|(timestamp, seq, metrics)| {
+                let mut out = alloc::vec::Vec::new();
+                pb_key(1, 0, &mut out);
+                pb_varint(timestamp, &mut out);
+                for (name, alias, datatype, kind, value) in metrics {
+                    let mut m = alloc::vec::Vec::new();
+                    pb_bytes_field(1, name.as_bytes(), &mut m);
+                    pb_key(2, 0, &mut m);
+                    pb_varint(alias, &mut m);
+                    pb_key(4, 0, &mut m);
+                    pb_varint(datatype as u64, &mut m);
+                    match kind {
+                        0 => {
+                            pb_key(10, 0, &mut m);
+                            pb_varint(value as u32 as u64, &mut m);
+                        }
+                        1 => {
+                            pb_key(11, 0, &mut m);
+                            pb_varint(value, &mut m);
+                        }
+                        2 => {
+                            pb_key(14, 0, &mut m);
+                            pb_varint(value & 1, &mut m);
+                        }
+                        _ => pb_bytes_field(15, &value.to_le_bytes(), &mut m),
+                    }
+                    pb_bytes_field(2, &m, &mut out);
+                }
+                pb_key(3, 0, &mut out);
+                pb_varint(seq, &mut out);
+                out
+            })
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed payload.
+    fn mutated_sparkplug() -> impl Strategy<Value = Vec<u8>> {
+        (
+            sparkplug_payload(),
+            any::<usize>(),
+            any::<u8>(),
+            any::<bool>(),
+        )
+            .prop_map(|(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            })
+    }
+
+    proptest! {
+        /// Parsing a payload, encoding the frame and parsing again gives the
+        /// same frame. The topic is not part of the payload, so it stays None.
+        #[test]
+        fn encode_round_trips_parsed_payloads(bytes in sparkplug_payload()) {
+            if let Ok(frame) = SparkplugParser.parse(&bytes) {
+                let encoded = SparkplugEncoder::new().encode(&frame).unwrap();
+                prop_assert_eq!(SparkplugParser.parse(&encoded).unwrap(), frame);
+            }
+        }
+
+        #[test]
+        fn structured_sparkplug_never_panics(bytes in mutated_sparkplug()) {
+            let _ = SparkplugParser.parse(&bytes);
+        }
+
+        #[test]
+        fn well_formed_sparkplug_never_panics_in_the_normalizer(bytes in sparkplug_payload()) {
+            if let Ok(frame) = SparkplugParser.parse(&bytes) {
+                let _ = SparkplugNormalizer.normalize(&frame);
+            }
+        }
+    }
+}
+
+impl SparkplugParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SparkplugParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SparkplugValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SparkplugValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SparkplugNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for SparkplugNormalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }

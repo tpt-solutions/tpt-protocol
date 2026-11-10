@@ -8,7 +8,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use tpt_protocol_core::{DataNormalizer, Error, FrameParser, StateValidator};
+use tpt_protocol_core::{DataNormalizer, Error, FrameEncoder, FrameParser, StateValidator};
 use tpt_protocol_tup::{DataPoint, Quality, SourceProtocol, TupValue};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -208,6 +208,127 @@ pub struct CoapFrame {
     pub token: Vec<u8>,
     pub options: Vec<CoapOption>,
     pub payload: Vec<u8>,
+}
+
+/// Writes a [`CoapFrame`] as an RFC 7252 binary message. Options are written
+/// in ascending option-number order (the delta encoding needs that, and the
+/// parser returns options in wire order), with the delta and length extensions
+/// where a value needs them. The token length is taken from the token.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CoapEncoder;
+
+impl CoapEncoder {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// Writes one option delta or length: the nibble value, and the extension
+/// bytes it needs (appended to `ext`).
+fn option_nibble(value: u32, ext: &mut Vec<u8>) -> u8 {
+    if value < 13 {
+        value as u8
+    } else if value < 269 {
+        ext.push((value - 13) as u8);
+        13
+    } else {
+        ext.extend_from_slice(&((value - 269) as u16).to_be_bytes());
+        14
+    }
+}
+
+/// Minimal big-endian bytes of an unsigned option value (none for zero).
+fn uint_option_bytes(value: u64) -> Vec<u8> {
+    let bytes = value.to_be_bytes();
+    let skip = bytes.iter().take_while(|&&b| b == 0).count();
+    bytes[skip..].to_vec()
+}
+
+/// Largest option value the length extension can express (RFC 7252 3.1).
+const MAX_OPTION_VALUE: usize = 65_804;
+
+impl FrameEncoder for CoapEncoder {
+    type Frame = CoapFrame;
+
+    fn encode(&self, frame: &Self::Frame) -> Result<Vec<u8>, Error> {
+        if frame.version != 1 {
+            return Err(Error::Parse(format!(
+                "CoAP version {} cannot be encoded, only version 1",
+                frame.version
+            )));
+        }
+        if frame.token.len() > 8 {
+            return Err(Error::Parse(format!(
+                "CoAP token is {} bytes, the maximum is 8",
+                frame.token.len()
+            )));
+        }
+
+        let mut options: Vec<(u16, Vec<u8>)> = Vec::new();
+        for option in &frame.options {
+            match option {
+                CoapOption::UriPath(segments) => {
+                    for segment in segments {
+                        options.push((11, segment.as_bytes().to_vec()));
+                    }
+                }
+                CoapOption::ContentFormat(v) => {
+                    options.push((12, uint_option_bytes(u64::from(*v))));
+                }
+                CoapOption::MaxAge(v) => options.push((14, uint_option_bytes(u64::from(*v)))),
+                CoapOption::ETag(v) => options.push((4, v.clone())),
+                CoapOption::Observe(v) => {
+                    if *v > 0xFF_FFFF {
+                        return Err(Error::Parse(format!(
+                            "CoAP Observe value {v} does not fit in 3 bytes"
+                        )));
+                    }
+                    options.push((6, uint_option_bytes(u64::from(*v))));
+                }
+                CoapOption::Other { number, value } => options.push((*number, value.clone())),
+            }
+        }
+        if let Some((_, value)) = options.iter().find(|(_, v)| v.len() > MAX_OPTION_VALUE) {
+            return Err(Error::Parse(format!(
+                "CoAP option value of {} bytes is too long",
+                value.len()
+            )));
+        }
+        // Stable sort: the order of repeated options (Uri-Path segments) is kept.
+        options.sort_by_key(|(number, _)| *number);
+
+        let msg_type: u8 = match frame.msg_type {
+            CoapType::Confirmable => 0,
+            CoapType::NonConfirmable => 1,
+            CoapType::Acknowledgement => 2,
+            CoapType::Reset => 3,
+        };
+        let mut out = Vec::with_capacity(4 + frame.token.len() + frame.payload.len() + 1);
+        out.push((1 << 6) | (msg_type << 4) | frame.token.len() as u8);
+        out.push(frame.code.as_u8());
+        out.extend_from_slice(&frame.message_id.to_be_bytes());
+        out.extend_from_slice(&frame.token);
+
+        let mut previous = 0u16;
+        for (number, value) in &options {
+            let delta = u32::from(*number - previous);
+            previous = *number;
+            let mut delta_ext = Vec::new();
+            let mut length_ext = Vec::new();
+            let delta_nibble = option_nibble(delta, &mut delta_ext);
+            let length_nibble = option_nibble(value.len() as u32, &mut length_ext);
+            out.push((delta_nibble << 4) | length_nibble);
+            out.extend_from_slice(&delta_ext);
+            out.extend_from_slice(&length_ext);
+            out.extend_from_slice(value);
+        }
+
+        if !frame.payload.is_empty() {
+            out.push(0xFF);
+            out.extend_from_slice(&frame.payload);
+        }
+        Ok(out)
+    }
 }
 
 pub struct CoapParser;
@@ -624,5 +745,123 @@ mod fuzz {
             // Err for malformed frames instead.
             let _ = parser.parse(&bytes);
         }
+    }
+
+    /// A CoAP message with version 1, a token of 0..=8 bytes, options encoded
+    /// as (delta, length, value) with nibble-sized deltas and lengths, and an
+    /// optional payload behind the 0xFF marker.
+    fn coap_message() -> impl Strategy<Value = Vec<u8>> {
+        (
+            0u8..4,
+            0u8..=8,
+            any::<u8>(),
+            any::<u16>(),
+            proptest::collection::vec(any::<u8>(), 8),
+            proptest::collection::vec(
+                (0u8..=12, proptest::collection::vec(any::<u8>(), 0..=12)),
+                0..6,
+            ),
+            proptest::option::of(proptest::collection::vec(any::<u8>(), 1..32)),
+        )
+            .prop_map(
+                |(msg_type, token_len, code, message_id, token, options, payload)| {
+                    let mut out = alloc::vec![0x40 | (msg_type << 4) | token_len, code,];
+                    out.extend_from_slice(&message_id.to_be_bytes());
+                    out.extend_from_slice(&token[..token_len as usize]);
+                    for (delta, value) in options {
+                        // Option length is the value length, which must fit a nibble.
+                        let len = value.len().min(12) as u8;
+                        out.push((delta << 4) | len);
+                        out.extend_from_slice(&value[..len as usize]);
+                    }
+                    if let Some(payload) = payload {
+                        out.push(0xFF);
+                        out.extend_from_slice(&payload);
+                    }
+                    out
+                },
+            )
+    }
+
+    /// One random byte overwrite or one truncation of a well-formed message.
+    fn mutated_coap() -> impl Strategy<Value = Vec<u8>> {
+        (coap_message(), any::<usize>(), any::<u8>(), any::<bool>()).prop_map(
+            |(mut bytes, idx, val, truncate)| {
+                if bytes.is_empty() {
+                    return bytes;
+                }
+                let i = idx % bytes.len();
+                if truncate {
+                    bytes.truncate(i);
+                } else {
+                    bytes[i] = val;
+                }
+                bytes
+            },
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn structured_coap_never_panics(bytes in mutated_coap()) {
+            let _ = CoapParser.parse(&bytes);
+        }
+
+        /// Parsing, encoding and parsing again gives the same frame. The bytes
+        /// need not be the encoder's exact output (the parser accepts
+        /// non-minimal extended lengths), so the comparison is on frames.
+        #[test]
+        fn encode_round_trips_parsed_frames(bytes in coap_message()) {
+            if let Ok(frame) = CoapParser.parse(&bytes) {
+                let encoded = CoapEncoder::new().encode(&frame).unwrap();
+                prop_assert_eq!(CoapParser.parse(&encoded).unwrap(), frame);
+            }
+        }
+
+        #[test]
+        fn well_formed_coap_never_panics_in_the_normalizer(bytes in coap_message()) {
+            if let Ok(frame) = CoapParser.parse(&bytes) {
+                let _ = CoapNormalizer.normalize(&frame);
+            }
+        }
+    }
+}
+
+impl CoapParser {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CoapParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CoapValidator {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CoapValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CoapNormalizer {
+    /// Creates the value. The type has no state.
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for CoapNormalizer {
+    fn default() -> Self {
+        Self::new()
     }
 }
