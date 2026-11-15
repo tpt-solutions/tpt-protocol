@@ -151,7 +151,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install maturin
@@ -167,7 +167,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install pymodbus==3.6.9 pynmea2==1.19.0 hl7==0.4.5 udsoncan==1.26.1
@@ -185,7 +185,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install pymavlink==2.4.50 pynmea2==1.19.0 aiocoap==0.4.17 asyncua==2.1.0 bacpypes3==0.0.110 cantools==45.1.2
