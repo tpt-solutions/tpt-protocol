@@ -62,7 +62,7 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
-toml = "0.8"
+toml = "1.2"
 tpt-telos-parser = { version = "0.2.0" }
 tpt-telos-ir = { version = "0.2.0" }
 tpt-telos-verifier = { version = "0.2.0" }
