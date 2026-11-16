@@ -51,7 +51,7 @@ jobs:
           done
           cp LICENSE-MIT LICENSE-APACHE README.md "dist/${name}/"
           tar -C dist -czf "${name}.tar.gz" "${name}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: tpt-protocol-*.tar.gz
