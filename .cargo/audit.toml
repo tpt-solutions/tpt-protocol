@@ -13,4 +13,8 @@ ignore = [
     # ratatui 0.30+ (Rust 1.88).
     "RUSTSEC-2026-0002",
     "RUSTSEC-2026-0253",
+    # chrono 0.4.45: unmaintained, not a vulnerability, and no fixed upgrade.
+    # Reached only via parquet 59 under the optional `parquet-record` daemon
+    # feature (--record-parquet). parquet 60 drops it but needs Rust 1.88.
+    "RUSTSEC-2026-0543",
 ]

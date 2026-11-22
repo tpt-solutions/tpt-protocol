@@ -15,6 +15,9 @@ ignore = [
     # release that bumps quick-xml (mavlink 0.21 needs Rust 1.88).
     { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS; build-time only via mavlink-bindgen, trusted XML input" },
     { id = "RUSTSEC-2026-0195", reason = "quick-xml memory exhaustion; build-time only via mavlink-bindgen, trusted XML input" },
+    # Unmaintained, not a vulnerability. Reached only via parquet 59 under the
+    # optional parquet-record feature. parquet 60 drops it but needs Rust 1.88.
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; via parquet 59 in the optional parquet-record feature; no fix below Rust 1.88" },
 ]
 
 [licenses]
