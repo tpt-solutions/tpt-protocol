@@ -516,11 +516,10 @@ async fn handle_connection(
         })
     };
 
-    let config = WebSocketConfig {
-        max_message_size: Some(MAX_INCOMING_MESSAGE),
-        max_frame_size: Some(MAX_INCOMING_MESSAGE),
-        ..Default::default()
-    };
+    // `WebSocketConfig` is non-exhaustive, so build it with its setters.
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_INCOMING_MESSAGE))
+        .max_frame_size(Some(MAX_INCOMING_MESSAGE));
 
     let ws_stream = match tokio::time::timeout(
         HANDSHAKE_TIMEOUT,
@@ -567,7 +566,7 @@ async fn handle_connection(
                             continue;
                         }
                     };
-                    if write.send(Message::Text(format!("[{json}]"))).await.is_err() {
+                    if write.send(Message::Text(format!("[{json}]").into())).await.is_err() {
                         break;
                     }
                     state.messages_sent.fetch_add(1, Ordering::Relaxed);
@@ -578,7 +577,7 @@ async fn handle_connection(
                     // Tell the client its stream has a gap. This is a JSON object,
                     // not an array, so clients must check for `"type":"lagged"`.
                     let notice = format!(r#"{{"type":"lagged","dropped":{dropped}}}"#);
-                    if write.send(Message::Text(notice)).await.is_err() {
+                    if write.send(Message::Text(notice.into())).await.is_err() {
                         break;
                     }
                 }
