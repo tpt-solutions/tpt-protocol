@@ -3,7 +3,7 @@
 //! Compiled by the CI `bench` job; timings are not compared in CI because
 //! shared runners are too noisy. Run locally with `cargo bench -p tpt-protocol-modbus`.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use tpt_protocol_core::FrameParser;
 use tpt_protocol_modbus::ModbusParser;
 
@@ -14,7 +14,7 @@ fn bench_parse(c: &mut Criterion) {
     ];
     let parser = ModbusParser::new();
     c.bench_function("modbus_tcp_read_holding_request", |b| {
-        b.iter(|| parser.parse(black_box(&tcp)))
+        b.iter(|| parser.parse(std::hint::black_box(&tcp)))
     });
 }
 
